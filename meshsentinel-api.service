@@ -1,0 +1,14 @@
+[Unit]
+Description=MeshSentinel REST API
+After=network.target
+
+[Service]
+User=daniel
+WorkingDirectory=/home/daniel/bbs/meshsentinel
+Environment="PATH=/home/daniel/meshtastic/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/daniel/meshtastic/venv/bin/python /home/daniel/bbs/meshsentinel/api.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
