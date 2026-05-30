@@ -109,11 +109,14 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_chanact_idx_ts ON channel_activity(channel_idx, ts DESC)"
     )
-    # Migración segura: agrega channel_name si no existe en DBs anteriores
-    try:
-        cur.execute("ALTER TABLE channel_activity ADD COLUMN channel_name TEXT")
-    except Exception:
-        pass
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chanact_ts ON channel_activity(ts DESC)"
+    )
+    for col, typedef in [("channel_name", "TEXT"), ("is_encrypted", "INTEGER"), ("rx_snr", "REAL")]:
+        try:
+            cur.execute(f"ALTER TABLE channel_activity ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass
     cur.execute("""
     CREATE TABLE IF NOT EXISTS channel_names (
       channel_idx INTEGER PRIMARY KEY,
@@ -139,6 +142,24 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_node_track_node_ts ON node_track(node_id, ts DESC)"
     )
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS traceroute_paths (
+      id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      target  TEXT    NOT NULL,
+      path    TEXT    NOT NULL,
+      ts      INTEGER NOT NULL
+    )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tr_paths_target_ts ON traceroute_paths(target, ts DESC)"
+    )
+
+    for col, typedef in [("relay_node", "TEXT"), ("rx_snr", "REAL"), ("hop_count", "INTEGER")]:
+        try:
+            cur.execute(f"ALTER TABLE node_track ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass  # ya existe
 
     con.commit()
     con.close()
@@ -283,13 +304,14 @@ def record_packet(
 
 
 def record_channel_packet(channel_idx: int, node_id: str, portnum: str,
-                          text_len: int = 0, channel_name: str = ""):
+                          text_len: int = 0, channel_name: str = "",
+                          is_encrypted: int = 0, rx_snr: Optional[float] = None):
     ts = _now()
     con = sqlite3.connect(DB_PATH)
     con.execute(
-        "INSERT INTO channel_activity (ts, channel_idx, node_id, portnum, text_len, channel_name)"
-        " VALUES (?,?,?,?,?,?)",
-        (ts, channel_idx, node_id, portnum, text_len, channel_name or None),
+        "INSERT INTO channel_activity (ts, channel_idx, node_id, portnum, text_len, channel_name, is_encrypted, rx_snr)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (ts, channel_idx, node_id, portnum, text_len, channel_name or None, is_encrypted, rx_snr),
     )
     if channel_name:
         con.execute(
@@ -319,6 +341,9 @@ def record_track_point(
     altitude: Optional[int],
     speed: Optional[float],
     heading: Optional[int],
+    relay_node: Optional[str] = None,
+    rx_snr: Optional[float] = None,
+    hop_count: Optional[int] = None,
     min_distance_m: float = 100.0,
 ) -> bool:
     """Insert a track point if the node moved ≥ min_distance_m from its last recorded point."""
@@ -333,14 +358,74 @@ def record_track_point(
     inserted = False
     if row is None or _haversine_m(row[0], row[1], lat, lon) >= min_distance_m:
         cur.execute(
-            "INSERT INTO node_track (node_id, short_name, long_name, lat, lon, altitude, speed, heading, ts)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (node_id, short_name, long_name, lat, lon, altitude, speed, heading, ts)
+            "INSERT INTO node_track (node_id, short_name, long_name, lat, lon, altitude, speed, heading, relay_node, rx_snr, hop_count, ts)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (node_id, short_name, long_name, lat, lon, altitude, speed, heading, relay_node, rx_snr, hop_count, ts)
         )
         inserted = True
     con.commit()
     con.close()
     return inserted
+
+
+def get_node_side_relay(node_id: str) -> Optional[str]:
+    """Retorna el relay directamente adyacente al nodo (path[-2] del traceroute más reciente).
+    Retorna None si no hay traceroute o si el nodo está conectado directo al BBS."""
+    import json
+    con = sqlite3.connect(DB_PATH)
+    row = con.execute(
+        "SELECT path FROM traceroute_paths WHERE target = ? ORDER BY ts DESC LIMIT 1",
+        (node_id,)
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    path = json.loads(row[0])
+    # path = [BBS, relay1, ..., relayN, node_id]
+    # Si len < 3 el nodo está directo al BBS, no hay relay intermedio
+    if len(path) < 3:
+        return None
+    return path[-2]
+
+
+def resolve_relay_node(relay_short_num: int) -> Optional[str]:
+    """Resuelve el último byte del ID de un relay al node_id completo conocido."""
+    if not relay_short_num:
+        return None
+    con = sqlite3.connect(DB_PATH)
+    rows = con.execute("SELECT node_id FROM node_stats").fetchall()
+    con.close()
+    matches = []
+    for (nid,) in rows:
+        try:
+            if int(nid.lstrip("!"), 16) & 0xFF == relay_short_num:
+                matches.append(nid)
+        except Exception:
+            pass
+    return matches[0] if len(matches) == 1 else None
+
+
+def backfill_relay_node(node_id: str, relay_node: str, since_ts: int):
+    """Actualiza puntos recientes sin relay del nodo con el relay descubierto por traceroute."""
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "UPDATE node_track SET relay_node = ? WHERE node_id = ? AND relay_node IS NULL AND ts >= ?",
+        (relay_node, node_id, since_ts)
+    )
+    con.commit()
+    con.close()
+
+
+def record_traceroute_path(target: str, path: list):
+    import json
+    ts = _now()
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT INTO traceroute_paths (target, path, ts) VALUES (?, ?, ?)",
+        (target, json.dumps(path), ts)
+    )
+    con.commit()
+    con.close()
 
 
 def cleanup_old_data(days: int = 7, track_days: int = 30):
@@ -355,6 +440,7 @@ def cleanup_old_data(days: int = 7, track_days: int = 30):
     cur.execute("DELETE FROM device_metrics WHERE ts < ?", (cutoff,))
     cur.execute("DELETE FROM channel_activity WHERE ts < ?", (cutoff,))
     cur.execute("DELETE FROM node_track WHERE ts < ?", (track_cutoff,))
+    cur.execute("DELETE FROM traceroute_paths WHERE ts < ?", (cutoff,))
     deleted = cur.rowcount
     con.commit()
     con.close()

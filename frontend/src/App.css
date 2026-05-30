@@ -194,6 +194,231 @@ body, #root {
   flex-shrink: 0;
 }
 
+/* ── Route path ── */
+.route-section {
+  border-top: 1px solid #1e3a5f;
+  padding: 10px 14px 12px;
+  flex-shrink: 0;
+}
+
+.route-header {
+  font-size: 10px;
+  font-weight: 600;
+  color: #546e7a;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+
+.route-age {
+  font-weight: 400;
+  color: #455a64;
+}
+
+.route-hop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.route-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #37474f;
+  border: 1px solid #546e7a;
+}
+
+.route-dot-bbs {
+  background: #1565c0;
+  border-color: #42a5f5;
+  box-shadow: 0 0 4px #42a5f5;
+}
+
+.route-dot-target {
+  background: #2e7d32;
+  border-color: #66bb6a;
+  box-shadow: 0 0 4px #66bb6a;
+}
+
+.route-hop-name {
+  font-size: 11px;
+  color: #b0bec5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.route-arrow {
+  font-size: 10px;
+  color: #37474f;
+  padding-left: 3px;
+  line-height: 1.2;
+}
+
+/* ── Stats dashboard ── */
+.stats-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.stats-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.stats-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #64b5f6;
+  letter-spacing: 1px;
+  margin-right: 4px;
+}
+
+.stats-period-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.stats-card {
+  background: #0d2137;
+  border: 1px solid #1e3a5f;
+  border-radius: 8px;
+  padding: 14px 18px;
+}
+
+.stats-card-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: #e3f2fd;
+  line-height: 1.1;
+}
+
+.stats-card-label {
+  font-size: 11px;
+  color: #546e7a;
+  margin-top: 4px;
+  letter-spacing: 0.5px;
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.stats-chart-card {
+  background: #0d2137;
+  border: 1px solid #1e3a5f;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.stats-chart-full {
+  grid-column: 1 / -1;
+}
+
+.stats-chart-half {
+  max-width: 520px;
+}
+
+.chart-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #90a4ae;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+/* ── Ranking nodos ── */
+.rank-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+  margin-top: 4px;
+}
+
+.rank-col-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+
+.rank-empty {
+  font-size: 12px;
+  color: #37474f;
+  padding: 8px 0;
+}
+
+.rank-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.rank-num {
+  font-size: 11px;
+  color: #37474f;
+  min-width: 14px;
+  padding-top: 1px;
+}
+
+.rank-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.rank-name {
+  font-size: 12px;
+  color: #b0bec5;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.rank-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rank-bar-wrap {
+  flex: 1;
+  background: #0a1929;
+  border-radius: 2px;
+  height: 6px;
+  overflow: hidden;
+}
+
+.rank-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.rank-count {
+  font-size: 11px;
+  color: #546e7a;
+  min-width: 32px;
+  text-align: right;
+}
+
 /* ── Main ── */
 .main {
   flex: 1;
@@ -274,7 +499,7 @@ body, #root {
 
 /* ── Node Panel ── */
 .node-panel {
-  position: absolute;
+  position: fixed;
   bottom: 20px;
   right: 20px;
   width: 260px;
@@ -283,7 +508,7 @@ body, #root {
   border-radius: 6px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
   font-size: 12px;
-  z-index: 100;
+  z-index: 2000;
 }
 
 .np-header {

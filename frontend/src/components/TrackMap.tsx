@@ -38,51 +38,48 @@ export default function TrackMap({ tracks }: Props) {
     if (!map) return;
 
     const activeIds = new Set(tracks.map((t) => t.nodeId));
-
-    // Remove layers for deselected nodes
     layersRef.current.forEach((layer, id) => {
-      if (!activeIds.has(id)) {
-        layer.remove();
-        layersRef.current.delete(id);
-      }
+      if (!activeIds.has(id)) { layer.remove(); layersRef.current.delete(id); }
     });
 
-    // Add layers for newly selected nodes
     let newTrackAdded = false;
     for (const track of tracks) {
       if (layersRef.current.has(track.nodeId)) continue;
       if (track.points.length === 0) continue;
 
       const group = L.layerGroup().addTo(map);
-      const latlngs: [number, number][] = track.points.map((p) => [p.lat, p.lon]);
+      const pts = track.points;
 
-      L.polyline(latlngs, { color: track.color, weight: 3, opacity: 0.85 }).addTo(group);
+      // Polilínea completa con el color del nodo
+      L.polyline(
+        pts.map((p) => [p.lat, p.lon] as [number, number]),
+        { color: track.color, weight: 4, opacity: 0.9 }
+      ).addTo(group);
 
-      for (const p of track.points) {
+      // Marcadores por punto con tooltip
+      for (const p of pts) {
         const t = new Date(p.ts * 1000).toLocaleTimeString("es-AR", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
         });
-        const parts: string[] = [`<b>${t}</b>`];
-        if (p.altitude != null) parts.push(`Alt: ${p.altitude} m`);
-        if (p.speed != null) parts.push(`Vel: ${(p.speed * 3.6).toFixed(1)} km/h`);
-        if (p.heading != null) parts.push(`Rum: ${p.heading}°`);
+        const lines: string[] = [`<b>${t}</b>`];
+        if (p.altitude != null) lines.push(`Alt: ${p.altitude} m`);
+        if (p.speed != null)    lines.push(`Vel: ${(p.speed * 3.6).toFixed(1)} km/h`);
+        if (p.heading != null)  lines.push(`Rum: ${p.heading}°`);
+        if (p.rx_snr != null)   lines.push(`SNR: ${p.rx_snr} dB`);
 
         L.circleMarker([p.lat, p.lon], {
           radius: 5,
           fillColor: track.color,
           color: "#fff",
           weight: 1,
-          fillOpacity: 0.9,
+          fillOpacity: 0.85,
         })
-          .bindTooltip(parts.join("<br>"), { direction: "top" })
+          .bindTooltip(lines.join("<br>"), { direction: "top" })
           .addTo(group);
       }
 
-      // Start marker (larger dot)
-      const first = track.points[0];
-      L.circleMarker([first.lat, first.lon], {
+      // Marcador de inicio más grande
+      L.circleMarker([pts[0].lat, pts[0].lon], {
         radius: 8,
         fillColor: track.color,
         color: "#fff",
@@ -96,14 +93,12 @@ export default function TrackMap({ tracks }: Props) {
       newTrackAdded = true;
     }
 
-    // Fit bounds when a new track is added
     if (newTrackAdded) {
-      const allPoints: [number, number][] = tracks
+      const allPts: [number, number][] = tracks
         .filter((t) => t.points.length > 0)
         .flatMap((t) => t.points.map((p) => [p.lat, p.lon] as [number, number]));
-      if (allPoints.length > 0) {
-        map.fitBounds(L.latLngBounds(allPoints), { padding: [40, 40] });
-      }
+      if (allPts.length > 0)
+        map.fitBounds(L.latLngBounds(allPts), { padding: [40, 40] });
     }
   }, [tracks]);
 
@@ -111,21 +106,12 @@ export default function TrackMap({ tracks }: Props) {
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
       {tracks.length === 0 && (
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            color: "#546e7a",
-            fontSize: 14,
-            textAlign: "center",
-            pointerEvents: "none",
-          }}
-        >
-          Seleccioná un nodo del panel izquierdo
-          <br />
-          para ver su trayectoria
+        <div style={{
+          position: "absolute", top: "50%", left: "50%",
+          transform: "translate(-50%, -50%)",
+          color: "#546e7a", fontSize: 14, textAlign: "center", pointerEvents: "none",
+        }}>
+          Seleccioná un nodo del panel izquierdo<br />para ver su trayectoria
         </div>
       )}
     </div>

@@ -4,9 +4,10 @@ import type { MeshNode, MeshEdge, GraphFreshness } from "./types";
 import MapView from "./components/MapView";
 import NodePanel from "./components/NodePanel";
 import TrackView from "./components/TrackView";
+import StatsView from "./components/StatsView";
 import "./App.css";
 
-type View = "mesh" | "tracks";
+type View = "mesh" | "tracks" | "stats";
 
 export default function App() {
   const [view, setView] = useState<View>("mesh");
@@ -14,6 +15,7 @@ export default function App() {
   const [edges, setEdges] = useState<MeshEdge[]>([]);
   const [freshness, setFreshness] = useState<GraphFreshness | null>(null);
   const [selectedId, setSelectedId] = useState<string>("");
+  const [selectedNode, setSelectedNode] = useState<MeshNode | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -37,9 +39,6 @@ export default function App() {
     loadGraph();
   }, []);
 
-  const selectedNode = selectedId
-    ? nodes.find((n) => n.node_id === selectedId) ?? null
-    : null;
 
   const filtered = nodes.filter((n) => {
     const q = search.toLowerCase();
@@ -66,10 +65,18 @@ export default function App() {
         >
           Trayectorias
         </button>
+        <button
+          className={`tab ${view === "stats" ? "tab-active" : ""}`}
+          onClick={() => setView("stats")}
+        >
+          Estadísticas
+        </button>
       </nav>
 
       {view === "tracks" ? (
         <TrackView />
+      ) : view === "stats" ? (
+        <StatsView />
       ) : (
       <div className="app">
       <aside className="sidebar">
@@ -94,7 +101,7 @@ export default function App() {
               <div
                 key={n.node_id}
                 className={`node-item ${active ? "active" : ""}`}
-                onClick={() => setSelectedId(n.node_id)}
+                onClick={() => { setSelectedId(n.node_id); setSelectedNode(n); }}
               >
                 <span className={`dot ${fresh ? "fresh" : "stale"}`} />
                 <div className="node-item-info">
@@ -141,12 +148,12 @@ export default function App() {
             nodes={nodes}
             edges={edges}
             selectedId={selectedId}
-            onSelectNode={(id) => setSelectedId(id)}
+            onSelectNode={(id) => { setSelectedId(id); setSelectedNode(nodes.find(n => n.node_id === id) ?? null); }}
           />
         </div>
 
         {selectedNode && (
-          <NodePanel node={selectedNode} onClose={() => setSelectedId("")} />
+          <NodePanel node={selectedNode} onClose={() => { setSelectedId(""); setSelectedNode(null); }} />
         )}
       </main>
     </div>

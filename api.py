@@ -8,9 +8,12 @@ Endpoints:
   GET /api/mesh/tree/<node_id_or_name>        — árbol recursivo desde un nodo raíz
 """
 
+import datetime
+import json
+import math
 import time
 import sqlite3
-from flask import Flask, jsonify, abort, send_from_directory
+from flask import Flask, jsonify, abort, request, send_from_directory
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -19,6 +22,8 @@ CORS(app)
 
 DB_PATH = "/home/daniel/bbs/meshsentinel/traffic_stats.sqlite"
 MAX_DEPTH = 8
+BBS_LAT  = -38.719946
+BBS_LON  = -62.255695
 
 
 def _migrate():
@@ -54,6 +59,15 @@ _migrate()
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    R = 6_371_000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
 
 def _con():
     con = sqlite3.connect(DB_PATH)
@@ -379,13 +393,282 @@ def get_track_nodes(date):
 @app.get("/api/tracks/<date>/<path:node_id>")
 def get_track_points(date, node_id):
     rows = _q("""
-        SELECT lat, lon, altitude, speed, heading, ts
-        FROM node_track
-        WHERE date(ts, 'unixepoch', 'localtime') = ?
-          AND node_id = ?
-        ORDER BY ts ASC
+        SELECT nt.lat, nt.lon, nt.altitude, nt.speed, nt.heading, nt.ts,
+               nt.relay_node, nt.rx_snr, nt.hop_count,
+               ns.short_name AS relay_short_name,
+               ns.long_name  AS relay_long_name,
+               ns.lat AS relay_lat,
+               ns.lon AS relay_lon
+        FROM node_track nt
+        LEFT JOIN node_stats ns ON ns.node_id = nt.relay_node
+        WHERE date(nt.ts, 'unixepoch', 'localtime') = ?
+          AND nt.node_id = ?
+        ORDER BY nt.ts ASC
     """, (date, node_id))
+    for row in rows:
+        rlat, rlon = row.pop("relay_lat", None), row.pop("relay_lon", None)
+        if rlat is not None and rlon is not None:
+            row["relay_distance_m"] = round(_haversine_m(row["lat"], row["lon"], rlat, rlon))
+        else:
+            row["relay_distance_m"] = None
     return jsonify({"points": rows})
+
+
+@app.get("/api/tracks/path/<path:node_id>")
+def get_track_path(node_id):
+    rows = _q(
+        "SELECT path, ts FROM traceroute_paths WHERE target = ? ORDER BY ts DESC LIMIT 1",
+        (node_id,)
+    )
+    if not rows:
+        return jsonify({"path": None, "ts": None})
+    raw_path = json.loads(rows[0]["path"])
+    enriched = []
+    for nid in raw_path:
+        info = _q("SELECT short_name, long_name FROM node_stats WHERE node_id = ?", (nid,))
+        enriched.append({
+            "node_id": nid,
+            "short_name": info[0]["short_name"] if info else None,
+            "long_name": info[0]["long_name"] if info else None,
+        })
+    return jsonify({"path": enriched, "ts": rows[0]["ts"]})
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _fit_snr_distance_model():
+    """Ajusta SNR = a + b*log10(dist_km) con nodos conocidos. Retorna (a, b, n, r2)."""
+    rows = _q("""
+        SELECT lat, lon, snr_from_bbs
+        FROM node_stats
+        WHERE lat IS NOT NULL AND lon IS NOT NULL AND snr_from_bbs IS NOT NULL
+    """)
+    points = []
+    for r in rows:
+        d = _haversine_km(BBS_LAT, BBS_LON, r["lat"], r["lon"])
+        if d >= 0.05:  # ignorar nodos a menos de 50 m (mismo lugar que el BBS)
+            points.append((math.log10(d), r["snr_from_bbs"]))
+
+    n = len(points)
+    if n < 3:
+        return None, None, n, None
+
+    x_vals = [p[0] for p in points]
+    y_vals = [p[1] for p in points]
+    x_mean = sum(x_vals) / n
+    y_mean = sum(y_vals) / n
+
+    num = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_vals, y_vals))
+    den = sum((x - x_mean) ** 2 for x in x_vals)
+    if den == 0:
+        return None, None, n, None
+
+    b = num / den
+    a = y_mean - b * x_mean
+
+    ss_res = sum((y - (a + b * x)) ** 2 for x, y in zip(x_vals, y_vals))
+    ss_tot = sum((y - y_mean) ** 2 for y in y_vals)
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    return a, b, n, r2
+
+
+@app.get("/api/stats/distance/<path:node_id>")
+def estimate_node_distance(node_id):
+    snr_row = _q("""
+        SELECT AVG(rx_snr) AS avg_snr, COUNT(*) AS samples
+        FROM channel_activity
+        WHERE node_id = ? AND rx_snr IS NOT NULL
+    """, (node_id,))
+
+    if not snr_row or snr_row[0]["avg_snr"] is None:
+        return jsonify({"error": "Sin datos de SNR para este nodo. Esperá que mande paquetes nuevos."}), 404
+
+    avg_snr = snr_row[0]["avg_snr"]
+    samples  = snr_row[0]["samples"]
+
+    a, b, ref_nodes, r2 = _fit_snr_distance_model()
+    if a is None:
+        return jsonify({"error": "No hay suficientes nodos de referencia para calibrar el modelo."}), 500
+    if abs(b) < 0.01 or r2 < 0.2:
+        return jsonify({
+            "error": f"El modelo no tiene correlación suficiente para esta red (r²={round(r2, 3)}). "
+                     "El SNR en LoRa depende más de obstáculos y condiciones que de la distancia."
+        }), 422
+
+    log_d = (avg_snr - a) / b
+    dist_km = 10 ** log_d
+
+    return jsonify({
+        "node_id":                node_id,
+        "estimated_distance_km":  round(dist_km, 2),
+        "estimated_distance_m":   round(dist_km * 1000),
+        "avg_snr":                round(avg_snr, 2),
+        "snr_samples":            samples,
+        "model": {
+            "reference_nodes": ref_nodes,
+            "r2":              round(r2, 3),
+            "a":               round(a, 3),
+            "b":               round(b, 3),
+            "note":            "r2 > 0.5 indica modelo confiable; r2 < 0.3 indica alta variabilidad"
+        }
+    })
+
+
+KNOWN_PORTNUMS = {
+    "TEXT_MESSAGE_APP", "POSITION_APP", "NODEINFO_APP",
+    "TELEMETRY_APP", "TRACEROUTE_APP", "NEIGHBORINFO_APP",
+}
+
+def _stats_since(period: str) -> int:
+    if period == "day":
+        today = datetime.date.today()
+        return int(datetime.datetime.combine(today, datetime.time.min).timestamp())
+    elif period == "week":
+        return int(time.time()) - 7 * 86400
+    elif period == "month":
+        return int(time.time()) - 30 * 86400
+    return abort(400)
+
+@app.get("/api/stats/traffic")
+def get_traffic_stats():
+    period = request.args.get("period", "day")
+    since  = _stats_since(period)
+
+    rows = _q("""
+        SELECT channel_idx,
+               COALESCE(is_encrypted, 0) AS is_encrypted,
+               COALESCE(portnum, 'UNKNOWN') AS portnum,
+               COUNT(*) AS cnt
+        FROM channel_activity
+        WHERE ts >= ?
+        GROUP BY channel_idx, is_encrypted, portnum
+    """, (since,))
+
+    public     = {}   # portnum → count
+    priv_known = {}   # portnum → count
+    priv_enc   = 0
+
+    for row in rows:
+        cnt = row["cnt"]
+        if row["channel_idx"] == 0:
+            key = row["portnum"] if row["portnum"] in KNOWN_PORTNUMS else "OTHER"
+            public[key] = public.get(key, 0) + cnt
+        elif row["is_encrypted"]:
+            priv_enc += cnt
+        else:
+            key = row["portnum"] if row["portnum"] in KNOWN_PORTNUMS else "OTHER"
+            priv_known[key] = priv_known.get(key, 0) + cnt
+
+    public_total      = sum(public.values())
+    priv_known_total  = sum(priv_known.values())
+    total             = public_total + priv_known_total + priv_enc
+
+    def pct(n, base=None):
+        base = base if base is not None else total
+        return round(n / base * 100, 1) if base else 0.0
+
+    return jsonify({
+        "period":   period,
+        "since_ts": since,
+        "total":    total,
+        "public": {
+            "total":        public_total,
+            "pct_of_total": pct(public_total),
+            "by_type": {
+                k: {"count": v, "pct": pct(v, public_total)}
+                for k, v in sorted(public.items(), key=lambda x: -x[1])
+            },
+        },
+        "other_mesh": {
+            "total":        priv_known_total,
+            "pct_of_total": pct(priv_known_total),
+            "by_type": {
+                k: {"count": v, "pct": pct(v, priv_known_total)}
+                for k, v in sorted(priv_known.items(), key=lambda x: -x[1])
+            },
+            "by_channel": [{"name": r["name"], "count": r["cnt"]} for r in _q("""
+                SELECT COALESCE(channel_name, 'Canal ' || channel_idx) AS name, COUNT(*) AS cnt
+                FROM channel_activity
+                WHERE ts >= ? AND channel_idx > 0 AND COALESCE(is_encrypted, 0) = 0
+                GROUP BY name ORDER BY cnt DESC
+            """, (since,))],
+        },
+        "private_encrypted": {
+            "total":        priv_enc,
+            "pct_of_total": pct(priv_enc),
+        },
+    })
+
+
+@app.get("/api/stats/traffic/evolution")
+def get_traffic_evolution():
+    period = request.args.get("period", "week")
+    since  = _stats_since(period)
+
+    label_expr = (
+        "strftime('%H:00', ts, 'unixepoch', 'localtime')"
+        if period == "day"
+        else "date(ts, 'unixepoch', 'localtime')"
+    )
+
+    rows = _q(f"""
+        SELECT {label_expr} AS label,
+               channel_idx,
+               COALESCE(is_encrypted, 0) AS is_encrypted,
+               COUNT(*) AS cnt
+        FROM channel_activity
+        WHERE ts >= ?
+        GROUP BY label, channel_idx, is_encrypted
+        ORDER BY label ASC
+    """, (since,))
+
+    by_label: dict = {}
+    for row in rows:
+        lbl = row["label"]
+        if lbl not in by_label:
+            by_label[lbl] = {"label": lbl, "public": 0, "other_mesh": 0, "private_encrypted": 0}
+        if row["channel_idx"] == 0:
+            by_label[lbl]["public"] += row["cnt"]
+        elif row["is_encrypted"]:
+            by_label[lbl]["private_encrypted"] += row["cnt"]
+        else:
+            by_label[lbl]["other_mesh"] += row["cnt"]
+
+    return jsonify({"points": list(by_label.values())})
+
+
+@app.get("/api/stats/nodes")
+def get_stats_nodes():
+    period = request.args.get("period", "day")
+    limit  = min(int(request.args.get("limit", 10)), 50)
+    since  = _stats_since(period)
+
+    def top_nodes(extra_where: str):
+        return _q(f"""
+            SELECT ca.node_id,
+                   COALESCE(ns.long_name, ns.short_name, ca.node_id) AS name,
+                   COUNT(*) AS count
+            FROM channel_activity ca
+            LEFT JOIN node_stats ns ON ns.node_id = ca.node_id
+            WHERE ca.ts >= ? {extra_where}
+            GROUP BY ca.node_id
+            ORDER BY count DESC
+            LIMIT ?
+        """, (since, limit))
+
+    return jsonify({
+        "public":            top_nodes("AND ca.channel_idx = 0"),
+        "other_mesh":        top_nodes("AND ca.channel_idx > 0 AND COALESCE(ca.is_encrypted,0) = 0"),
+        "private_encrypted": top_nodes("AND ca.channel_idx > 0 AND COALESCE(ca.is_encrypted,0) = 1"),
+    })
 
 
 FRONTEND_DIST = "/home/daniel/bbs/meshsentinel/frontend/dist"

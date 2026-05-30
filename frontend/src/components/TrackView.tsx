@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { fetchTrackNodes, fetchTrackPoints } from "../api";
-import type { TrackNode, TrackPoint } from "../types";
+import { fetchTrackNodes, fetchTrackPoints, fetchTrackPath } from "../api";
+import type { TrackNode, TrackPoint, TraceHop } from "../types";
 import TrackMap, { type TrackData } from "./TrackMap";
 
 const COLORS = [
@@ -23,6 +23,8 @@ export default function TrackView() {
   const [colorMap, setColorMap] = useState<Map<string, string>>(new Map());
   const loadingNodesRef = useRef<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [tracePath, setTracePath] = useState<TraceHop[] | null>(null);
+  const [tracePathTs, setTracePathTs] = useState<number | null>(null);
 
   useEffect(() => {
     setSelected(new Set());
@@ -38,15 +40,22 @@ export default function TrackView() {
       .finally(() => setLoading(false));
   }, [date]);
 
+  useEffect(() => {
+    const nodeId = [...selected][0];
+    if (!nodeId) { setTracePath(null); setTracePathTs(null); return; }
+    fetchTrackPath(nodeId)
+      .then((d) => { setTracePath(d.path); setTracePathTs(d.ts); })
+      .catch(() => { setTracePath(null); setTracePathTs(null); });
+  }, [selected]);
+
   const toggleNode = async (nodeId: string) => {
     if (selected.has(nodeId)) {
-      setSelected((prev) => {
-        const s = new Set(prev);
-        s.delete(nodeId);
-        return s;
-      });
+      setSelected(new Set());
       return;
     }
+
+    // Deselect all others before selecting the new one
+    setSelected(new Set());
 
     if (loadingNodesRef.current.has(nodeId)) return;
 
@@ -71,7 +80,7 @@ export default function TrackView() {
       loadingNodesRef.current.delete(nodeId);
     }
 
-    setSelected((prev) => new Set([...prev, nodeId]));
+    setSelected(new Set([nodeId]));
   };
 
   const tracks: TrackData[] = [...selected]
@@ -142,6 +151,29 @@ export default function TrackView() {
             );
           })}
         </div>
+        {tracePath && tracePath.length > 0 && (
+          <div className="route-section">
+            <div className="route-header">
+              RUTA
+              {tracePathTs != null && (
+                <span className="route-age">
+                  · hace {Math.round((Date.now() / 1000 - tracePathTs) / 60)} min
+                </span>
+              )}
+            </div>
+            {tracePath.map((hop, i) => (
+              <div key={hop.node_id}>
+                <div className="route-hop">
+                  <span className={`route-dot${i === 0 ? " route-dot-bbs" : i === tracePath.length - 1 ? " route-dot-target" : ""}`} />
+                  <span className="route-hop-name">
+                    {hop.long_name || hop.short_name || hop.node_id}
+                  </span>
+                </div>
+                {i < tracePath.length - 1 && <div className="route-arrow">↓</div>}
+              </div>
+            ))}
+          </div>
+        )}
       </aside>
 
       <main className="main">

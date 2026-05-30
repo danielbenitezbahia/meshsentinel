@@ -10,20 +10,6 @@ interface Props {
   onSelectNode: (id: string) => void;
 }
 
-function snrColor(snr: number | null | undefined): string {
-  if (snr == null) return "#546e7a";
-  if (snr >= 8) return "#00e676";
-  if (snr >= 4) return "#ffeb3b";
-  if (snr >= 0) return "#ff9800";
-  return "#f44336";
-}
-
-function edgeWeight(snr: number | null | undefined): number {
-  if (snr == null) return 1.5;
-  if (snr >= 8) return 3.5;
-  if (snr >= 4) return 2.5;
-  return 1.5;
-}
 
 function nodeColor(node: MeshNode): string {
   if (node.last_seen_mins_ago == null) return "#37474f";
@@ -43,8 +29,6 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.CircleMarker>>(new Map());
-  // all edge lines, keyed by "reporterId||neighborId" (sorted)
-  const edgeLinesRef = useRef<Map<string, L.Polyline>>(new Map());
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -70,40 +54,6 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
 
     markersRef.current.forEach((m) => m.remove());
     markersRef.current.clear();
-    edgeLinesRef.current.forEach((l) => l.remove());
-    edgeLinesRef.current.clear();
-
-    // nodeMap includes ALL nodes (even without GPS) so we can look up names
-    const nodeMap = new Map(nodes.map((n) => [n.node_id, n]));
-    // posMap: only nodes with GPS for drawing lines
-    const posMap = new Map(nodesWithPos.map((n) => [n.node_id, n]));
-
-    // Draw all edges between nodes that both have GPS
-    const seenEdges = new Set<string>();
-    for (const edge of edges) {
-      const a = posMap.get(edge.reporter);
-      const b = posMap.get(edge.neighbor);
-      if (!a || !b) continue;
-      const key = [edge.reporter, edge.neighbor].sort().join("||");
-      if (seenEdges.has(key)) continue;
-      seenEdges.add(key);
-
-      const snr = edge.snr ?? edge.snr_reverse;
-      const nameA = nodeMap.get(edge.reporter)?.short_name || edge.reporter;
-      const nameB = nodeMap.get(edge.neighbor)?.short_name || edge.neighbor;
-
-      const line = L.polyline([[a.lat!, a.lon!], [b.lat!, b.lon!]], {
-        color: snrColor(snr),
-        weight: edgeWeight(snr),
-        opacity: 0.7,
-      });
-      line.bindTooltip(
-        `${nameA} ↔ ${nameB}${snr != null ? `<br>SNR: ${snr} dB` : ""}`,
-        { direction: "center", sticky: true }
-      );
-      line.addTo(map);
-      edgeLinesRef.current.set(key, line);
-    }
 
     // Draw nodes
     for (const node of nodesWithPos) {
@@ -146,33 +96,16 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
     }
   }, [nodes, edges]);
 
-  // Al seleccionar un nodo: resaltar marcador y destacar sus arcos
+  // Al seleccionar un nodo: resaltar marcador
   useEffect(() => {
     const nodeMap = new Map(nodes.map((n) => [n.node_id, n]));
-
     markersRef.current.forEach((marker, id) => {
       const node = nodeMap.get(id);
       if (!node) return;
       if (id === selectedId) {
         marker.setStyle({ radius: 11, color: "#f48fb1", fillColor: "#e91e63", weight: 3 } as any);
-        if (node.lat != null) mapRef.current?.panTo([node.lat!, node.lon!]);
       } else {
         marker.setStyle({ radius: 7, fillColor: nodeColor(node), color: nodeBorder(node), weight: 2 } as any);
-      }
-    });
-
-    // Destacar arcos conectados al nodo seleccionado, opacar el resto
-    edgeLinesRef.current.forEach((line, key) => {
-      const [a, b] = key.split("||");
-      const isConnected = selectedId && (a === selectedId || b === selectedId);
-      if (!selectedId) {
-        line.setStyle({ opacity: 0.7, weight: edgeWeight(undefined) });
-      } else if (isConnected) {
-        // Buscar SNR del edge para restaurar color correcto
-        line.setStyle({ opacity: 1, weight: 4 });
-        line.bringToFront();
-      } else {
-        line.setStyle({ opacity: 0.15 });
       }
     });
   }, [selectedId, nodes]);
@@ -197,20 +130,6 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
         {withPos} con GPS · {withoutPos} sin posición
       </div>
 
-      <div style={{
-        position: "absolute", top: 10, right: 10, zIndex: 1000,
-        background: "rgba(13,33,55,0.9)", color: "#607d8b",
-        padding: "6px 10px", borderRadius: 4, fontSize: 10,
-        border: "1px solid #1e3a5f", lineHeight: "1.8",
-      }}>
-        <div style={{ color: "#546e7a", fontWeight: 600, marginBottom: 2 }}>SNR link</div>
-        {[["#00e676", "≥ 8 dB"], ["#ffeb3b", "4–8 dB"], ["#ff9800", "0–4 dB"], ["#f44336", "< 0 dB"]].map(([c, l]) => (
-          <div key={l} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <div style={{ width: 16, height: 3, background: c, borderRadius: 2 }} />
-            <span>{l}</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

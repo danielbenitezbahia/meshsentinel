@@ -39,6 +39,7 @@ class Interface:
         self._traceroute_last_refill = 0
         self._traceroute_last_send = 0
         self._channel_hash_to_name: dict = {}  # hash → nombre del canal
+        self._track_traceroute_last: dict = {}  # node_id → último traceroute por movimiento
 
     def load_device_path(self):
         """Load the device path from the configuration file."""
@@ -76,14 +77,14 @@ class Interface:
             pub.subscribe(self.on_receive, "meshtastic.receive.neighborinfo")
             pub.subscribe(self.on_receive, "meshtastic.receive.position")
             pub.subscribe(self.on_receive, "meshtastic.receive.traceroute")
-            self._sync_node_positions()
-            self._sync_channel_names()
-            self._hook_raw_packets()
             try:
                 self._own_node_id = f"!{self.interface.myInfo.my_node_num:08x}"
                 logger.info("Own node ID: %s", self._own_node_id)
             except Exception:
                 logger.exception("Could not determine own node ID")
+            self._sync_node_positions()
+            self._sync_channel_names()
+            self._hook_raw_packets()
         except Exception as e:
             logger.error(f"Failed to connect to Meshtastic device: {e}")
             self.interface = None
@@ -292,9 +293,16 @@ class Interface:
                         alt = pos.get("altitude")
                         speed = pos.get("speed") or pos.get("groundSpeed")
                         heading = pos.get("groundTrack") or pos.get("heading")
+                        relay_node = traffic_stats.get_node_side_relay(sender)
+                        rx_snr = packet.get("rxSnr") or packet.get("snr")
+                        hop_start = packet.get("hopStart")
+                        hop_limit = packet.get("hopLimit")
+                        hop_count = (hop_start - hop_limit) if (hop_start is not None and hop_limit is not None) else None
+                        logger.info("POSITION_APP from %s | packetKeys=%s | relayNode=%s hopStart=%s hopLimit=%s",
+                                    sender, list(packet.keys()), packet.get("relayNode"), packet.get("hopStart"), packet.get("hopLimit"))
                         traffic_stats.update_node_position(sender, lat, lon, alt)
                         if sender != self._own_node_id:
-                            traffic_stats.record_track_point(
+                            inserted = traffic_stats.record_track_point(
                                 node_id=sender,
                                 short_name=short_name,
                                 long_name=long_name,
@@ -303,7 +311,12 @@ class Interface:
                                 altitude=alt,
                                 speed=float(speed) if speed is not None else None,
                                 heading=int(heading) if heading is not None else None,
+                                relay_node=relay_node,
+                                rx_snr=float(rx_snr) if rx_snr is not None else None,
+                                hop_count=hop_count,
                             )
+                            if inserted:
+                                self._maybe_prioritize_traceroute(sender)
                         logger.debug("position recorded for %s: %.5f, %.5f", sender, lat, lon)
                 return
 
@@ -346,6 +359,14 @@ class Interface:
                         a, b = path[i], path[i + 1]
                         snr = snr_decoded[i] if i < len(snr_decoded) else None
                         traffic_stats.record_neighbors(a, [{"node_id": b, "snr": snr}])
+                    # Store full path for web display
+                    traffic_stats.record_traceroute_path(sender, path)
+                    # Backfill relay_node en puntos recientes sin relay (últimos 10 min)
+                    if len(path) >= 3:
+                        node_relay = path[-2]
+                        since = int(time.time()) - 600
+                        traffic_stats.backfill_relay_node(sender, node_relay, since)
+                        logger.info("backfill relay_node=%s for %s since -%ds", node_relay, sender, 600)
                     logger.info("traceroute path recorded: %s (len=%d)", " → ".join(path), len(path))
                 return
 
@@ -453,6 +474,12 @@ class Interface:
 
         original = self.interface._handleFromRadio
 
+        PORTNUM_NAMES = {
+            1: "TEXT_MESSAGE_APP", 3: "POSITION_APP", 4: "NODEINFO_APP",
+            67: "TELEMETRY_APP", 70: "TRACEROUTE_APP", 71: "NEIGHBORINFO_APP",
+            72: "DETECTION_SENSOR_APP", 73: "PAXCOUNTER_APP",
+        }
+
         def _patched(from_radio_bytes):
             try:
                 fr = FromRadio()
@@ -462,14 +489,24 @@ class Interface:
                     mp          = fr.packet
                     channel_idx = int(getattr(mp, "channel", 0) or 0)
                     from_num    = int(getattr(mp, "from", 0) or 0)
-                    if channel_idx > 0 and from_num:
-                        from_id  = f"!{from_num:08x}"
-                        pkt_type = mp.WhichOneof("payload_variant")
-                        portnum  = "ENCRYPTED" if pkt_type == "encrypted" else "DECODED"
-                        ch_name  = self._channel_hash_to_name.get(channel_idx, "")
-                        traffic_stats.record_channel_packet(
-                            channel_idx, from_id, portnum, 0, ch_name
-                        )
+                    if not from_num:
+                        return original(from_radio_bytes)
+                    from_id = f"!{from_num:08x}"
+                    if from_id == self._own_node_id:
+                        return original(from_radio_bytes)
+                    pkt_type = mp.WhichOneof("payload_variant")
+                    ch_name  = self._channel_hash_to_name.get(channel_idx, "")
+                    rx_snr   = float(mp.rx_snr) if mp.rx_snr else None
+                    if pkt_type == "encrypted":
+                        portnum      = "ENCRYPTED"
+                        is_encrypted = 1
+                    else:
+                        raw_portnum  = getattr(mp.decoded, "portnum", 0)
+                        portnum      = PORTNUM_NAMES.get(int(raw_portnum), f"PORT_{raw_portnum}")
+                        is_encrypted = 0
+                    traffic_stats.record_channel_packet(
+                        channel_idx, from_id, portnum, 0, ch_name, is_encrypted, rx_snr
+                    )
             except Exception:
                 logger.exception("Error in _hook_raw_packets")
             return original(from_radio_bytes)
@@ -478,6 +515,19 @@ class Interface:
         logger.info("Raw packet hook instalado en _handleFromRadio")
 
     # ── traceroute-based topology discovery ──────────────────────────────────
+
+    TRACK_TRACEROUTE_INTERVAL = 600  # mínimo 10 min entre traceroutes por nodo en movimiento
+
+    def _maybe_prioritize_traceroute(self, node_id: str):
+        """Si el nodo se movió y pasaron ≥10 min desde el último traceroute, lo pone al frente de la cola."""
+        now = time.time()
+        if now - self._track_traceroute_last.get(node_id, 0) < self.TRACK_TRACEROUTE_INTERVAL:
+            return
+        if node_id in self._traceroute_queue:
+            self._traceroute_queue.remove(node_id)
+        self._traceroute_queue.appendleft(node_id)
+        self._track_traceroute_last[node_id] = now
+        logger.info("traceroute prioritized for moving node %s", node_id)
 
     def _refill_traceroute_queue(self):
         """Carga todos los nodos vistos en las últimas 2h (excepto el propio) en la cola."""

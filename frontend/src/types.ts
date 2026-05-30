@@ -95,6 +95,92 @@ export interface TrackPoint {
   speed: number | null;
   heading: number | null;
   ts: number;
+  relay_node: string | null;
+  rx_snr: number | null;
+  hop_count: number | null;
+  relay_distance_m: number | null;
+  relay_short_name: string | null;
+  relay_long_name: string | null;
+}
+
+export interface TraceHop {
+  node_id: string;
+  short_name: string | null;
+  long_name: string | null;
+}
+
+export interface TracePathResponse {
+  path: TraceHop[] | null;
+  ts: number | null;
+}
+
+export interface TrafficTypeEntry {
+  count: number;
+  pct: number;
+}
+
+export interface PrivateChannelEntry {
+  name: string;
+  count: number;
+}
+
+export interface TrafficStats {
+  period: string;
+  since_ts: number;
+  total: number;
+  public: {
+    total: number;
+    pct_of_total: number;
+    by_type: Record<string, TrafficTypeEntry>;
+  };
+  other_mesh: {
+    total: number;
+    pct_of_total: number;
+    by_type: Record<string, TrafficTypeEntry>;
+    by_channel: PrivateChannelEntry[];
+  };
+  private_encrypted: {
+    total: number;
+    pct_of_total: number;
+  };
+}
+
+export interface EvolutionPoint {
+  label: string;
+  public: number;
+  other_mesh: number;
+  private_encrypted: number;
+}
+
+export interface TrafficEvolutionResponse {
+  points: EvolutionPoint[];
+}
+
+export interface StatsNodeEntry {
+  node_id: string;
+  name: string;
+  count: number;
+}
+
+export interface NodeDistanceResponse {
+  node_id: string;
+  estimated_distance_km: number;
+  estimated_distance_m: number;
+  avg_snr: number;
+  snr_samples: number;
+  model: {
+    reference_nodes: number;
+    r2: number;
+    a: number;
+    b: number;
+    note: string;
+  };
+}
+
+export interface StatsNodesResponse {
+  public: StatsNodeEntry[];
+  other_mesh: StatsNodeEntry[];
+  private_encrypted: StatsNodeEntry[];
 }
 
 export interface TrackDatesResponse {
