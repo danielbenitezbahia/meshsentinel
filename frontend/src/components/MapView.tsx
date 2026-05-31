@@ -10,25 +10,57 @@ interface Props {
   onSelectNode: (id: string) => void;
 }
 
+const PALETTE = [
+  "#7b1fa2", "#c62828", "#e65100", "#2e7d32",
+  "#1565c0", "#00695c", "#4527a0", "#880e4f",
+  "#4e342e", "#01579b", "#558b2f", "#f57f17",
+  "#37474f", "#6a1520", "#006064", "#827717",
+];
 
-function nodeColor(node: MeshNode): string {
-  if (node.last_seen_mins_ago == null) return "#37474f";
-  if (node.last_seen_mins_ago < 30) return "#1976d2";
-  if (node.last_seen_mins_ago < 120) return "#0d47a1";
-  return "#263238";
+function hashNodeColor(nodeId: string): string {
+  let h = 0;
+  for (let i = 0; i < nodeId.length; i++) {
+    h = (h * 31 + nodeId.charCodeAt(i)) >>> 0;
+  }
+  return PALETTE[h % PALETTE.length];
 }
 
-function nodeBorder(node: MeshNode): string {
-  if (node.last_seen_mins_ago == null) return "#546e7a";
-  if (node.last_seen_mins_ago < 30) return "#90caf9";
-  if (node.last_seen_mins_ago < 120) return "#42a5f5";
-  return "#455a64";
+function nodeOpacity(node: MeshNode): number {
+  if (node.last_seen_mins_ago == null) return 0.4;
+  if (node.last_seen_mins_ago < 30) return 1.0;
+  if (node.last_seen_mins_ago < 120) return 0.72;
+  return 0.45;
+}
+
+function makeLabelIcon(node: MeshNode, selected: boolean): L.DivIcon {
+  const label = node.short_name || node.node_id.slice(-4);
+  const bg = hashNodeColor(node.node_id);
+  const opacity = nodeOpacity(node);
+  const border = selected ? "2px solid #ffffff" : "1.5px solid rgba(255,255,255,0.28)";
+  const shadow = selected
+    ? "0 0 0 2.5px #e91e63, 0 3px 12px rgba(0,0,0,0.75)"
+    : "0 2px 7px rgba(0,0,0,0.55)";
+
+  const html = `<div style="
+    display:inline-flex;flex-direction:column;align-items:center;
+    transform:translate(-50%,-100%);opacity:${opacity};cursor:pointer;
+  "><div style="
+    background:${bg};color:#fff;padding:3px 9px;border-radius:6px;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    font-size:12px;font-weight:700;white-space:nowrap;letter-spacing:0.3px;
+    border:${border};box-shadow:${shadow};line-height:1.4;
+  ">${label}</div><div style="
+    width:7px;height:7px;background:#fff;border:2px solid ${bg};
+    border-radius:50%;margin-top:1px;flex-shrink:0;
+  "></div></div>`;
+
+  return L.divIcon({ className: "", html, iconSize: [0, 0], iconAnchor: [0, 0] });
 }
 
 export default function MapView({ nodes, edges, selectedId, onSelectNode }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const markersRef = useRef<Map<string, L.CircleMarker>>(new Map());
+  const markersRef = useRef<Map<string, L.Marker>>(new Map());
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -55,19 +87,14 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
     markersRef.current.forEach((m) => m.remove());
     markersRef.current.clear();
 
-    // Draw nodes
     for (const node of nodesWithPos) {
       const label = node.short_name || node.node_id;
       const lastSeen = node.last_seen_mins_ago != null
         ? node.last_seen_mins_ago < 2 ? "hace instantes" : `hace ${node.last_seen_mins_ago} min`
         : "desconocido";
 
-      const marker = L.circleMarker([node.lat!, node.lon!], {
-        radius: 7,
-        fillColor: nodeColor(node),
-        color: nodeBorder(node),
-        weight: 2,
-        fillOpacity: 0.9,
+      const marker = L.marker([node.lat!, node.lon!], {
+        icon: makeLabelIcon(node, false),
       });
 
       marker.bindTooltip(
@@ -75,39 +102,29 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
         `${node.hops_from_bbs != null ? node.hops_from_bbs + " hops" : ""}` +
         `${node.snr_from_bbs != null ? " · " + node.snr_from_bbs + " dB" : ""}<br>` +
         `Visto: ${lastSeen}`,
-        { direction: "top", offset: [0, -8] }
+        { direction: "top", offset: [0, -40] }
       );
 
       marker.on("click", () => onSelectNode(node.node_id));
       marker.addTo(map);
       markersRef.current.set(node.node_id, marker);
-
-      // Label permanente
-      const icon = L.divIcon({
-        className: "",
-        html: `<div style="color:#cfd8dc;font-size:9px;font-family:monospace;
-          text-shadow:0 0 3px #000,0 0 3px #000;
-          white-space:nowrap;pointer-events:none;
-          margin-top:10px;margin-left:-20px;">${label}</div>`,
-        iconSize: [40, 12],
-        iconAnchor: [20, 0],
-      });
-      L.marker([node.lat!, node.lon!], { icon, interactive: false, zIndexOffset: -100 }).addTo(map);
     }
   }, [nodes, edges]);
 
-  // Al seleccionar un nodo: resaltar marcador
   useEffect(() => {
     const nodeMap = new Map(nodes.map((n) => [n.node_id, n]));
     markersRef.current.forEach((marker, id) => {
       const node = nodeMap.get(id);
       if (!node) return;
-      if (id === selectedId) {
-        marker.setStyle({ radius: 11, color: "#f48fb1", fillColor: "#e91e63", weight: 3 } as any);
-      } else {
-        marker.setStyle({ radius: 7, fillColor: nodeColor(node), color: nodeBorder(node), weight: 2 } as any);
-      }
+      marker.setIcon(makeLabelIcon(node, id === selectedId));
     });
+
+    if (selectedId && mapRef.current) {
+      const node = nodeMap.get(selectedId);
+      if (node?.lat != null && node?.lon != null) {
+        mapRef.current.flyTo([node.lat, node.lon], mapRef.current.getZoom(), { duration: 0.6 });
+      }
+    }
   }, [selectedId, nodes]);
 
   useEffect(() => {
@@ -120,7 +137,6 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
-
       <div style={{
         position: "absolute", bottom: 30, left: 10, zIndex: 1000,
         background: "rgba(13,33,55,0.85)", color: "#607d8b",
@@ -129,7 +145,6 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
       }}>
         {withPos} con GPS · {withoutPos} sin posición
       </div>
-
     </div>
   );
 }

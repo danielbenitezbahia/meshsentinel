@@ -5,9 +5,10 @@ import MapView from "./components/MapView";
 import NodePanel from "./components/NodePanel";
 import TrackView from "./components/TrackView";
 import StatsView from "./components/StatsView";
+import MeshWarsView from "./components/MeshWarsView";
 import "./App.css";
 
-type View = "mesh" | "tracks" | "stats";
+type View = "mesh" | "tracks" | "stats" | "wars";
 
 export default function App() {
   const [view, setView] = useState<View>("mesh");
@@ -52,7 +53,7 @@ export default function App() {
   return (
     <div className="root-layout">
       <nav className="tabbar">
-        <span className="tabbar-brand">SOMesh BBS</span>
+        <span className="tabbar-brand">Sentinel BBS</span>
         <button
           className={`tab ${view === "mesh" ? "tab-active" : ""}`}
           onClick={() => setView("mesh")}
@@ -71,12 +72,20 @@ export default function App() {
         >
           Estadísticas
         </button>
+        <button
+          className={`tab ${view === "wars" ? "tab-active" : ""}`}
+          onClick={() => setView("wars")}
+        >
+          MeshWars
+        </button>
       </nav>
 
       {view === "tracks" ? (
         <TrackView />
       ) : view === "stats" ? (
         <StatsView />
+      ) : view === "wars" ? (
+        <MeshWarsView />
       ) : (
       <div className="app">
       <aside className="sidebar">
