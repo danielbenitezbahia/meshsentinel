@@ -66,6 +66,7 @@ interface GameState {
   moveSource:         string | null;
   postConquestTroops: number;
   winner:             Faction | null;
+  currentFaction:     Faction;
   combatMsg:          string;
   aiQueue:            AIEvent[];
   aiMsg:              string;
@@ -468,7 +469,7 @@ function initGame(nodes: MeshNode[]): GameState {
   if (!active.length) return {
     cells: {}, bridges: [], islands: [], phase: "action", turn: 1,
     reinforcementsLeft: 0, attackTarget: null, attackSource: null, moveSource: null, postConquestTroops: 0,
-    winner: null, combatMsg: "", aiQueue: [], aiMsg: "", log: ["Sin nodos activos con GPS."],
+    winner: null, currentFaction: "player", combatMsg: "", aiQueue: [], aiMsg: "", log: ["Sin nodos activos con GPS."],
   };
 
   const cellMap = new Map<string, MeshNode>();
@@ -496,7 +497,7 @@ function initGame(nodes: MeshNode[]): GameState {
     cells, bridges, islands,
     phase: "reinforcement", turn: 1, reinforcementsLeft: reinf,
     attackTarget: null, attackSource: null, moveSource: null, postConquestTroops: 0,
-    winner: null, combatMsg: "", aiQueue: [], aiMsg: "",
+    winner: null, currentFaction: "player", combatMsg: "", aiQueue: [], aiMsg: "",
     log: [`Turno 1 — +${reinf} tropas · ${Object.keys(cells).length} territorios`],
   };
 }
@@ -554,16 +555,20 @@ export default function MeshWarsView() {
     if (event.type === "attack_round") SFX.attack();
     if (event.type === "attack_result") event.won ? SFX.conquest() : SFX.lose();
     if (event.type === "reinforce") {
-      playTone(660, 0.06, "sine", 0.08);
-      // Update the troop marker immediately so the user sees the number change right now
-      const cell = gs.cells[event.cellId];
-      const marker = troopMarkersRef.current.get(event.cellId);
-      if (marker && cell)
-        marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(event.troops, cell.isProduction), iconSize: [0, 0], iconAnchor: [0, 0] }));
       if (mapRef.current) {
         const [lat, lon] = cellToLatLng(event.cellId);
         mapRef.current.flyTo([lat, lon], mapRef.current.getZoom(), { animate: true, duration: 0.75 });
       }
+      // Wait for flyTo to finish + small pause, then show the reinforcement
+      const cellId = event.cellId;
+      const newTroops = event.troops;
+      setTimeout(() => {
+        playTone(660, 0.06, "sine", 0.08);
+        const cell = gsRef.current?.cells[cellId];
+        const marker = troopMarkersRef.current.get(cellId);
+        if (marker && cell)
+          marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(newTroops, cell.isProduction), iconSize: [0, 0], iconAnchor: [0, 0] }));
+      }, 950); // 750ms flyTo + 200ms pause
     }
     if (event.type === "census_start" && mapRef.current)
       runCensusFlash(event.cellIds, polygonsRef.current, mapRef.current);
@@ -575,7 +580,7 @@ export default function MeshWarsView() {
     let delay = 400;
     if (event.type === "faction_start")        delay = 1200;
     else if (event.type === "census_start")    delay = censusDuration(event.cellIds.length);
-    else if (event.type === "reinforce")       delay = 900;
+    else if (event.type === "reinforce")       delay = 1400;
     else if (event.type === "attack_announce") delay = 1100;
     else if (event.type === "attack_result")   delay = 700;
 
@@ -587,7 +592,7 @@ export default function MeshWarsView() {
 
         switch (evt.type) {
           case "faction_start":
-            return { ...base, aiMsg: `${NAMES[evt.faction]} está jugando...`, combatMsg: "", attackSource: null, attackTarget: null };
+            return { ...base, currentFaction: evt.faction, aiMsg: `${NAMES[evt.faction]} está jugando...`, combatMsg: "", attackSource: null, attackTarget: null };
 
           case "census_start":
             return { ...base, aiMsg: `${NAMES[evt.faction]}: ${evt.cellIds.length} territorios`, combatMsg: "" };
@@ -625,6 +630,7 @@ export default function MeshWarsView() {
             return {
               ...base, cells: f.cells, phase: f.winner ? "game_over" : "reinforcement",
               turn: f.turn, reinforcementsLeft: f.reinf, winner: f.winner,
+              currentFaction: f.winner ?? "player",
               aiQueue: [], aiMsg: "", attackSource: null, attackTarget: null,
               combatMsg: f.winner ? `¡${NAMES[f.winner]} dominó la Mesh!` : "",
               log: [`TURNO ${f.turn} — +${f.reinf} TROPAS`, ...prev.log.slice(0, 9)],
@@ -706,7 +712,7 @@ export default function MeshWarsView() {
         `<b style="color:${color}">${NAMES[cell.owner]}</b> · ${cell.troops} tropas<br>` +
         `${cell.isProduction ? "★" : cell.isSynthetic ? "◈" : "📡"} ${cell.nodeName}` +
         (cell.isNodeActive ? ` <span style="color:#4caf50">●</span>` : ""),
-        { direction: "top", sticky: false },
+        { direction: "top", sticky: false, offset: [0, -12], className: "mesh-tooltip" },
       );
 
       const cellId = cell.h3Index;
@@ -849,13 +855,27 @@ export default function MeshWarsView() {
           next[prev.attackTarget] = { ...to, troops: newDef };
 
           if (newDef === 0) {
-            // Combat over — enter post_conquest to choose how many troops to move
-            next[prev.attackTarget] = { ...to, owner: from.owner, troops: 0 }; // conquered, empty for now
             SFX.conquest();
+            if (from.troops <= 2) {
+              // Only one possible move (1 to conquered, 1 stays) — auto-confirm
+              next[prev.attackSource] = { ...from, troops: 1 };
+              next[prev.attackTarget] = { ...to, owner: from.owner, troops: 1 };
+              const winner = checkWinner(next);
+              if (winner) setTimeout(() => SFX.win(), 50);
+              return {
+                ...prev, cells: next, winner,
+                phase: winner ? "game_over" : "action",
+                attackTarget: null, attackSource: null, postConquestTroops: 0,
+                combatMsg: `¡CONQUISTA! — ${roundMsg}`,
+                log: [`¡CONQUISTA! +1 tropa`, ...prev.log.slice(0, 9)],
+              };
+            }
+            // More troops — let player choose how many to move
+            next[prev.attackTarget] = { ...to, owner: from.owner, troops: 0 };
             return {
               ...prev, cells: next,
               phase: "post_conquest",
-              postConquestTroops: from.troops - 1, // default: move all but 1
+              postConquestTroops: 1,
               combatMsg: `¡CONQUISTA! — ${roundMsg}`,
             };
           }
@@ -940,6 +960,7 @@ export default function MeshWarsView() {
         return {
           ...prev, cells: f.cells, phase: f.winner ? "game_over" : "reinforcement",
           turn: f.turn, reinforcementsLeft: f.reinf, winner: f.winner,
+          currentFaction: f.winner ?? "player",
           aiQueue: [], aiMsg: "", attackSource: null, attackTarget: null,
           combatMsg: f.winner ? `¡${NAMES[f.winner]} dominó la Mesh!` : "",
           log: [`TURNO ${f.turn} — +${f.reinf} TROPAS`, ...prev.log.slice(0, 9)],
@@ -1009,7 +1030,7 @@ export default function MeshWarsView() {
             {scoreRows.map(({ f, territories, islands }) => (
               <div key={f} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2 }}>
                 <span style={{ color: "#ccc", width: 12 }}>
-                  {f === "player" && gs.phase !== "game_over" ? "▶" : " "}
+                  {f === gs.currentFaction && gs.phase !== "game_over" ? "▶" : " "}
                 </span>
                 <span style={{ color: COLORS[f], width: 72, fontWeight: 700 }}>{NAMES[f]}</span>
                 <span style={{ color: "#fff", width: 28, textAlign: "right" }}>{territories}</span>
@@ -1068,9 +1089,7 @@ export default function MeshWarsView() {
           flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
           gap: 10, borderRight: "1px solid #30363d", padding: "0 12px",
         }}>
-          {!gs ? (
-            nodesReady && <button style={btnStyle("#c62828")} onClick={startGame}>⚔ INICIAR</button>
-          ) : gs.phase === "game_over" ? (
+          {!gs ? null : gs.phase === "game_over" ? (
             <button style={btnStyle("#1976d2")} onClick={startGame}>NUEVA PARTIDA</button>
           ) : inAiTurn ? (
             <button
