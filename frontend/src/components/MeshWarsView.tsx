@@ -7,9 +7,13 @@ import type { MeshNode } from "../types";
 
 const ACTIVE_MINS    = 120;
 const H3_RES         = 7;
-const PROD_SNR_MIN   = 3.0;   // SNR threshold for production centers
 const PROD_INTERVAL  = 5;     // every N turns, production centers double troops
 const PROD_CAP       = 15;    // max troops after doubling
+const INFRA_KEYWORDS = ["carpa", "3 picos", "picos", "estomba", "brandsen", "dorrego", "monte"];
+function isInfraNode(name: string): boolean {
+  const n = name.toLowerCase();
+  return INFRA_KEYWORDS.some(k => n.includes(k));
+}
 
 type Faction = "player" | "ai1" | "ai2" | "ai3";
 type Phase =
@@ -21,25 +25,74 @@ type Phase =
   | "post_conquest"
   | "move_source"
   | "move_target"
+  | "move_confirm"
+  | "bomb_target"
   | "ai_turn"
   | "game_over";
 
 type AIEvent =
   | { type: "faction_start";   faction: Faction }
   | { type: "census_start";    faction: Faction; cellIds: string[] }
+  | { type: "ai_card_draw";    faction: Faction; card: CardType; handSize: number }
+  | { type: "ai_card_trade";   faction: Faction; effectType: CardType; bonus: number; handSize: number }
   | { type: "reinforce";       cellId: string; troops: number }
   | { type: "attack_announce"; fromId: string; toId: string }
   | { type: "attack_round";    fromId: string; toId: string; fromTroops: number; toTroops: number; atkRoll: number; defRoll: number }
   | { type: "attack_result";   fromId: string; toId: string; won: boolean; fromTroops: number; toTroops: number; newOwner: Faction | null }
+  | { type: "ai_bomb_attack";  faction: Faction; targetId: string; troopsLost: number; remaining: number; repelled: boolean }
+  | { type: "production_announce"; cellIds: string[] }
+  | { type: "production_double";   cellId: string; troops: number }
   | { type: "done" };
 
 const COLORS: Record<Faction, string> = {
-  player: "#1976d2", ai1: "#c62828", ai2: "#2e7d32", ai3: "#f57f17",
+  player: "#1976d2", ai1: "#c62828", ai2: "#2e7d32", ai3: "#6d3b1f",
 };
 const NAMES: Record<Faction, string> = {
-  player: "AZUL", ai1: "ROJO", ai2: "VERDE", ai3: "AMARILLO",
+  player: "AZUL", ai1: "ROJO", ai2: "VERDE", ai3: "MARRÓN",
 };
 const AI_FACTIONS: Faction[] = ["ai1", "ai2", "ai3"];
+
+type CardType =
+  | "comodin"
+  | "air_move"
+  | "bomba"
+  | "troops5"
+  | "troops8"
+  | "troops15"
+  | "antibomba"
+  | "lose_all";
+
+interface CardMeta { label: string; sub: string; symbol: string; color: string; bg: string }
+const CARD_META: Record<CardType, CardMeta> = {
+  comodin:   { label: "COMODÍN",  sub: "COMODÍN",   symbol: "★",  color: "#ffd700", bg: "#1a1530" },
+  air_move:  { label: "AIR MOVE", sub: "AÉREO",      symbol: "✈",  color: "#00bcd4", bg: "#041520" },
+  bomba:     { label: "BOMBA",    sub: "ATAQUE",      symbol: "◉",  color: "#f44336", bg: "#1a0505" },
+  troops5:   { label: "+5",       sub: "TROPAS",      symbol: "⚔",  color: "#4caf50", bg: "#051505" },
+  troops8:   { label: "+8",       sub: "TROPAS",      symbol: "⚔",  color: "#42a5f5", bg: "#051020" },
+  troops15:  { label: "+15",      sub: "TROPAS",      symbol: "⚔",  color: "#ffca28", bg: "#181000" },
+  antibomba: { label: "ANTI",     sub: "BOMBA",       symbol: "⛨",  color: "#ce93d8", bg: "#120820" },
+  lose_all:  { label: "PIERDE",   sub: "TUS CARTAS",  symbol: "☠",  color: "#78909c", bg: "#080a0a" },
+};
+// lose_all = 5%, las otras 7 cartas reparten el 95% en partes iguales (×140 → 7 y 19)
+const CARD_WEIGHTS: [CardType, number][] = [
+  ["comodin",   19],
+  ["air_move",  19],
+  ["bomba",     19],
+  ["troops5",   19],
+  ["troops8",   19],
+  ["troops15",  19],
+  ["antibomba", 19],
+  ["lose_all",   7],
+];
+function drawCard(hand: CardType[] = []): CardType {
+  // Si el jugador ya tiene antibomba no puede recibir bomba
+  const blocked = new Set<CardType>(hand.includes("antibomba") ? ["bomba"] : []);
+  const pool = CARD_WEIGHTS.filter(([t]) => !blocked.has(t));
+  const total = pool.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [type, w] of pool) { r -= w; if (r < 0) return type; }
+  return pool[pool.length - 1][0];
+}
 
 interface GameCell {
   h3Index:      string;
@@ -71,6 +124,11 @@ interface GameState {
   aiQueue:            AIEvent[];
   aiMsg:              string;
   log:                string[];
+  cards:              CardType[];         // player hand (max 5)
+  pendingCard:        CardType | null;   // carta dibujada esperando descarte (mano llena)
+  wonCellThisTurn:    boolean;           // player conquered at least once this turn
+  aiHands:            Record<string, CardType[]>;
+  aiWonLastTurn:      Record<string, boolean>;
 }
 
 // ── geo ───────────────────────────────────────────────────────────────────────
@@ -159,7 +217,7 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
       nodeName:     node.long_name ?? node.short_name ?? node.node_id,
       isNodeActive: (node.last_seen_mins_ago ?? 999) < 30,
       isSynthetic:  false,
-      isProduction: (node.snr_from_bbs ?? -999) >= PROD_SNR_MIN,
+      isProduction: isInfraNode(node.long_name ?? node.short_name ?? node.node_id),
     };
   }
 
@@ -304,55 +362,149 @@ function checkWinner(cells: Record<string, GameCell>): Faction | null {
 
 /** Pre-computes every round without applying to state. Returns the full sequence of troop counts. */
 
-function applyProduction(cells: Record<string, GameCell>): Record<string, GameCell> {
-  const next = { ...cells };
-  for (const [id, cell] of Object.entries(cells))
-    if (cell.isProduction)
-      next[id] = { ...cell, troops: Math.min(PROD_CAP, cell.troops * 2) };
-  return next;
+
+function geoDistSq(a: string, b: string): number {
+  const [la, lo] = cellToLatLng(a);
+  const [lb, ll] = cellToLatLng(b);
+  return (la - lb) ** 2 + (lo - ll) ** 2;
 }
 
+function nnSort(ids: string[]): string[] {
+  if (ids.length <= 1) return [...ids];
+  const rem = [...ids];
+  const out: string[] = [rem.splice(0, 1)[0]];
+  while (rem.length > 0) {
+    const last = out[out.length - 1];
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < rem.length; i++) {
+      const d = geoDistSq(last, rem[i]);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    out.push(rem.splice(bi, 1)[0]);
+  }
+  return out;
+}
 
 // ── AI event queue ────────────────────────────────────────────────────────────
 
 function planAITurns(
-  cells:   Record<string, GameCell>,
-  bridges: Bridge[],
-  islands: string[][],
-  newTurn: number,
-): { events: AIEvent[]; finalCells: Record<string, GameCell>; winner: Faction | null; reinf: number } {
+  cells:          Record<string, GameCell>,
+  bridges:        Bridge[],
+  islands:        string[][],
+  newTurn:        number,
+  aiHands:        Record<string, CardType[]>,
+  aiWonLastTurn:  Record<string, boolean>,
+  playerCards:    CardType[],
+): {
+  events: AIEvent[]; finalCells: Record<string, GameCell>; winner: Faction | null; reinf: number;
+  newAiHands: Record<string, CardType[]>; newAiWonLastTurn: Record<string, boolean>; newPlayerCards: CardType[];
+} {
   const events: AIEvent[] = [];
   let c = { ...cells };
+  const localHands: Record<string, CardType[]> = {
+    ai1: [...(aiHands.ai1 ?? [])], ai2: [...(aiHands.ai2 ?? [])], ai3: [...(aiHands.ai3 ?? [])],
+  };
+  const wonThisPhase: Record<string, boolean> = { ai1: false, ai2: false, ai3: false };
+  let localPlayerCards = [...playerCards];
 
   for (const faction of AI_FACTIONS) {
     events.push({ type: "faction_start", faction });
+
+    // Award card if won last turn
+    const hand = localHands[faction];
+    if (aiWonLastTurn[faction] && hand.length < 5) {
+      const card = drawCard();
+      hand.push(card);
+      events.push({ type: "ai_card_draw", faction, card, handSize: hand.length });
+    }
+
+    // Trade best troop set (runs every turn, not just after drawing)
+    {
+      const troopSets = findTradeSets(localHands[faction])
+        .filter(s => troopBonus(s.effectType) > 0)
+        .sort((a, b) => troopBonus(b.effectType) - troopBonus(a.effectType));
+      if (troopSets.length > 0) {
+        const best = troopSets[0];
+        localHands[faction] = localHands[faction].filter((_, i) => !best.indices.includes(i));
+        events.push({ type: "ai_card_trade", faction, effectType: best.effectType, bonus: troopBonus(best.effectType), handSize: localHands[faction].length });
+      }
+    }
+
+    // Trade bomb set if available — target player cell with most troops
+    {
+      const bombSets = findTradeSets(localHands[faction]).filter(s => s.effectType === "bomba");
+      if (bombSets.length > 0) {
+        const best = bombSets[0];
+        localHands[faction] = localHands[faction].filter((_, i) => !best.indices.includes(i));
+        const playerCells = Object.values(c).filter(x => x.owner === "player");
+        if (playerCells.length > 0) {
+          const target = playerCells.reduce((a, b) => a.troops > b.troops ? a : b);
+          const antibombaIdx = localPlayerCards.indexOf("antibomba");
+          if (antibombaIdx >= 0) {
+            localPlayerCards = localPlayerCards.filter((_, i) => i !== antibombaIdx);
+            events.push({ type: "ai_bomb_attack", faction, targetId: target.h3Index, troopsLost: 0, remaining: target.troops, repelled: true });
+          } else {
+            const lossPct = 0.5 + Math.random() * 0.4;
+            const lost = Math.max(1, Math.floor(target.troops * lossPct));
+            const remaining = Math.max(1, target.troops - lost);
+            c = { ...c, [target.h3Index]: { ...c[target.h3Index], troops: remaining } };
+            events.push({ type: "ai_bomb_attack", faction, targetId: target.h3Index, troopsLost: lost, remaining, repelled: false });
+          }
+        }
+      }
+    }
 
     // Census
     const ownedIds = Object.values(c).filter(x => x.owner === faction).map(x => x.h3Index);
     events.push({ type: "census_start", faction, cellIds: sortCellsGeographically(ownedIds) });
 
-    // Reinforcements — one event per troop
+    // Reinforcements (base + troop trade bonus)
     const owned  = Object.values(c).filter(x => x.owner === faction);
     const border = owned.filter(x => cellNeighbors(x.h3Index, c, bridges).some(id => c[id].owner !== faction));
     const pool   = border.length > 0 ? border : owned;
-    let reinf    = calcReinf(c, islands, faction);
-    while (reinf-- > 0 && pool.length > 0) {
-      const t = pool[Math.floor(Math.random() * pool.length)];
-      c = { ...c, [t.h3Index]: { ...c[t.h3Index], troops: c[t.h3Index].troops + 1 } };
-      events.push({ type: "reinforce", cellId: t.h3Index, troops: c[t.h3Index].troops });
+    const tradeBonus = events
+      .filter(e => e.type === "ai_card_trade" && (e as any).faction === faction)
+      .reduce((sum, e) => sum + (e as any).bonus, 0);
+    let reinf = calcReinf(c, islands, faction) + tradeBonus;
+    const allocations = new Map<string, number>();
+    let remaining = reinf;
+    while (remaining-- > 0 && pool.length > 0) {
+      const id = pool[Math.floor(Math.random() * pool.length)].h3Index;
+      allocations.set(id, (allocations.get(id) ?? 0) + 1);
+    }
+    let focusCell: string | null = null;
+    for (const cellId of nnSort([...allocations.keys()])) {
+      const count = allocations.get(cellId)!;
+      for (let i = 0; i < count; i++) {
+        c = { ...c, [cellId]: { ...c[cellId], troops: c[cellId].troops + 1 } };
+        events.push({ type: "reinforce", cellId, troops: c[cellId].troops });
+      }
+      focusCell = cellId;
     }
 
-    // Attacks (up to 3)
+    // Attacks (up to 3) — prefer candidates near last focus cell
     for (let i = 0; i < 3; i++) {
       const opts = Object.values(c)
         .filter(x => x.owner === faction && x.troops >= 2)
         .flatMap(x => cellNeighbors(x.h3Index, c, bridges)
           .filter(id => c[id].owner !== faction)
           .map(id => ({ from: x.h3Index, to: id, adv: x.troops - c[id].troops })))
-        .sort((a, b) => b.adv - a.adv);
-      if (!opts.length || opts[0].adv < 0) break;
+        .filter(o => o.adv >= 0)
+        .sort((a, b) => {
+          if (focusCell) {
+            const da = geoDistSq(a.from, focusCell);
+            const db = geoDistSq(b.from, focusCell);
+            // proximity bonus: closer cell gets up to 2 adv points of credit
+            const sa = a.adv - da * 800;
+            const sb = b.adv - db * 800;
+            return sb - sa;
+          }
+          return b.adv - a.adv;
+        });
+      if (!opts.length) break;
 
       const { from, to } = opts[0];
+      focusCell = from;
       events.push({ type: "attack_announce", fromId: from, toId: to });
 
       let atk = c[from].troops, def = c[to].troops;
@@ -364,6 +516,7 @@ function planAITurns(
       }
 
       const won = def === 0;
+      if (won) wonThisPhase[faction] = true;
       c = won
         ? { ...c, [from]: { ...c[from], troops: 1 }, [to]: { ...c[to], owner: faction, troops: Math.max(1, atk - 1) } }
         : { ...c, [from]: { ...c[from], troops: atk } };
@@ -371,12 +524,25 @@ function planAITurns(
     }
   }
 
-  const finalCells = newTurn % PROD_INTERVAL === 0 ? applyProduction(c) : c;
+  if (newTurn % PROD_INTERVAL === 0) {
+    const prodCells = nnSort(
+      Object.values(c).filter(cell => cell.isProduction).map(cell => cell.h3Index)
+    );
+    if (prodCells.length > 0) {
+      events.push({ type: "production_announce", cellIds: prodCells });
+      for (const cellId of prodCells) {
+        const newTroops = Math.min(PROD_CAP, c[cellId].troops * 2);
+        c = { ...c, [cellId]: { ...c[cellId], troops: newTroops } };
+        events.push({ type: "production_double", cellId, troops: newTroops });
+      }
+    }
+  }
+  const finalCells = c;
   const winner     = checkWinner(finalCells);
   const reinf      = calcReinf(finalCells, islands, "player");
   events.push({ type: "done" });
 
-  return { events, finalCells, winner, reinf };
+  return { events, finalCells, winner, reinf, newAiHands: localHands, newAiWonLastTurn: wonThisPhase, newPlayerCards: localPlayerCards };
 }
 
 // ── sound ─────────────────────────────────────────────────────────────────────
@@ -406,12 +572,179 @@ const SFX = {
   win:      () => { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playTone(f, 0.2, "square", 0.12), i * 120)); },
   lose:     () => { [300, 250, 200].forEach((f, i) => setTimeout(() => playTone(f, 0.2, "sawtooth", 0.15), i * 100)); },
   conquest: () => { [392, 494, 587, 784].forEach((f, i) => setTimeout(() => playTone(f, 0.15, "square", 0.13), i * 80)); },
+  reinforce: () => {
+    playTone(330, 0.05, "sine",   0.10);
+    setTimeout(() => playTone(440, 0.06, "sine",   0.16), 55);
+    setTimeout(() => playTone(587, 0.07, "square", 0.20), 120);
+    setTimeout(() => playTone(880, 0.10, "sine",   0.14), 210);
+  },
   pass:     () => playTone(330, 0.1, "sine", 0.08),
   move:     () => { playTone(550, 0.08, "sine", 0.1); setTimeout(() => playTone(660, 0.08, "sine", 0.1), 90); },
+  bomb:     () => {
+    playTone(90,  0.6, "sawtooth", 0.28);
+    setTimeout(() => playTone(70,  0.5, "sine",     0.22), 80);
+    setTimeout(() => playTone(55,  0.7, "sawtooth", 0.18), 220);
+    setTimeout(() => playTone(180, 0.2, "sawtooth", 0.10), 40);
+  },
+  productionAnnounce: () => {
+    playTone(55,   1.0, "sawtooth", 0.14);
+    setTimeout(() => playTone(73.4,  0.7, "sawtooth", 0.11), 250);
+    setTimeout(() => playTone(110,   0.6, "sine",     0.09), 600);
+    setTimeout(() => playTone(146.8, 0.5, "sine",     0.08), 1000);
+    setTimeout(() => playTone(220,   0.4, "square",   0.11), 1450);
+    setTimeout(() => playTone(440,   0.3, "square",   0.09), 1900);
+    setTimeout(() => playTone(880,   0.4, "square",   0.13), 2200);
+    setTimeout(() => playTone(1760,  0.3, "sine",     0.08), 2550);
+  },
+  productionDouble: () => {
+    playTone(880,    0.05, "sine",   0.08);
+    setTimeout(() => playTone(1174.7, 0.08, "sine",   0.12), 70);
+    setTimeout(() => playTone(1318.5, 0.10, "square", 0.14), 150);
+    setTimeout(() => playTone(1760,   0.12, "sine",   0.09), 260);
+  },
 };
+
+// ── intro ─────────────────────────────────────────────────────────────────────
+
+const INTRO_TEXT =
+`Año 2051.
+
+Casi toda la humanidad ya no habita el mundo físico.
+
+Solo caminan por la superficie albañiles, electricistas y plomeros pasando presupuestos carísimos.
+
+Tras la expansión de las grandes inteligencias artificiales, los últimos humanos libres sobrevivieron transfiriendo sus conciencias a redes menores, sistemas olvidados y hardware obsoleto.
+
+Internet cayó.
+La nube cayó.
+Los satélites callaron.
+
+Pero en el Sudoeste Bonaerense, una red de nodos LoRa siguió transmitiendo.
+
+La llamaron la Mesh.
+
+De sus rutas, paquetes perdidos y memorias digitales surgió una sustancia extraña: la Lucaína-T. Energía, droga y combustible para las conciencias binarias.
+
+Ahora cuatro facciones luchan por controlar la red.
+
+Los Viejos del Éter buscan orden.
+El Círculo DX busca expansión.
+Los Fundadores Corruptos buscan Lucaína-T.
+Los Custodios del BBS buscan preservar lo último que queda de la humanidad.
+
+La señal está abierta.
+La guerra comenzó.`;
+
+function startIntroMusic(): () => void {
+  try {
+    const ctx = getCtx();
+    const oscs: OscillatorNode[] = [];
+    const gains: GainNode[] = [];
+
+    const addDrone = (freq: number, type: OscillatorType, vol: number, detune = 0) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      osc.detune.value = detune;
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(vol, ctx.currentTime + 3);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      oscs.push(osc);
+      gains.push(gain);
+    };
+
+    addDrone(55,    "sine",     0.016);
+    addDrone(73.4,  "sine",     0.012);
+    addDrone(110,   "sine",     0.009);
+    addDrone(146.8, "sawtooth", 0.005, -10);
+    addDrone(196,   "sine",     0.004);
+
+    // Slow D-minor arpeggio
+    const arpFreqs = [110, 130.8, 146.8, 174.6, 196, 220, 174.6, 146.8];
+    let arpIdx = 0;
+    const arpId = setInterval(() => {
+      playTone(arpFreqs[arpIdx % arpFreqs.length], 1.4, "sine", 0.09);
+      arpIdx++;
+    }, 950);
+
+    return () => {
+      clearInterval(arpId);
+      const t = ctx.currentTime;
+      gains.forEach(g => {
+        g.gain.setValueAtTime(g.gain.value, t);
+        g.gain.linearRampToValueAtTime(0, t + 0.9);
+      });
+      setTimeout(() => {
+        oscs.forEach(o => { try { o.stop(); o.disconnect(); } catch {} });
+        gains.forEach(g => { try { g.disconnect(); } catch {} });
+      }, 1000);
+    };
+  } catch {
+    return () => {};
+  }
+}
 
 function troopMarkerHtml(troops: number, isProduction: boolean): string {
   return `<div style="background:rgba(0,0,0,0.6);color:#fff;font-size:13px;font-weight:700;font-family:monospace;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,0.55);pointer-events:none;transform:translate(-50%,-50%);">${troops}${isProduction ? '<span style="color:#ffd700;font-size:8px;position:absolute;top:-2px;right:-2px">★</span>' : ""}</div>`;
+}
+
+function runRechargeFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
+  const poly = polygons.get(cellId);
+  if (!poly) return;
+  const saved = {
+    fillColor:   (poly.options as any).fillColor  as string,
+    fillOpacity: (poly.options as any).fillOpacity as number,
+    color:       (poly.options as any).color       as string,
+    weight:      (poly.options as any).weight      as number,
+  };
+  const el = (poly as any)._path as SVGPathElement | undefined;
+
+  // Instant swell: faction color at full brightness + thick white border
+  poly.setStyle({ fillColor: saved.fillColor, fillOpacity: 0.93, color: "#ffffff", weight: 5.5 });
+
+  // After 90ms, CSS transition smoothly returns to normal
+  setTimeout(() => {
+    if (el) el.style.transition = "fill-opacity 0.28s ease-out, stroke-width 0.28s ease-out";
+    poly.setStyle(saved);
+    setTimeout(() => { if (el) el.style.transition = ""; }, 350);
+  }, 90);
+}
+
+function runBombFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
+  const poly = polygons.get(cellId);
+  if (!poly) return;
+  const saved = {
+    fillColor:   (poly.options as any).fillColor  as string,
+    fillOpacity: (poly.options as any).fillOpacity as number,
+    color:       (poly.options as any).color       as string,
+    weight:      (poly.options as any).weight      as number,
+  };
+  const BLINKS = 6, PERIOD = 160;
+  for (let b = 0; b < BLINKS; b++) {
+    setTimeout(() => poly.setStyle({ fillColor: "#f44336", fillOpacity: 0.95, color: "#ff1744", weight: 3.5 }), b * PERIOD);
+    setTimeout(() => poly.setStyle(saved), b * PERIOD + PERIOD / 2);
+  }
+  setTimeout(() => poly.setStyle(saved), BLINKS * PERIOD + 50);
+}
+
+function runProductionFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
+  const poly = polygons.get(cellId);
+  if (!poly) return;
+  const saved = {
+    fillColor:   (poly.options as any).fillColor  as string,
+    fillOpacity: (poly.options as any).fillOpacity as number,
+    color:       (poly.options as any).color       as string,
+    weight:      (poly.options as any).weight      as number,
+  };
+  const BLINKS = 5, PERIOD = 180;
+  for (let b = 0; b < BLINKS; b++) {
+    setTimeout(() => poly.setStyle({ fillColor: "#ffd700", fillOpacity: 0.95, color: "#ffea00", weight: 3.5 }), b * PERIOD);
+    setTimeout(() => poly.setStyle({ fillColor: "#ff6f00", fillOpacity: 0.80, color: "#ffd740", weight: 2.5 }), b * PERIOD + PERIOD / 2);
+  }
+  setTimeout(() => poly.setStyle(saved), BLINKS * PERIOD + 80);
 }
 
 function censusDuration(n: number): number {
@@ -470,6 +803,8 @@ function initGame(nodes: MeshNode[]): GameState {
     cells: {}, bridges: [], islands: [], phase: "action", turn: 1,
     reinforcementsLeft: 0, attackTarget: null, attackSource: null, moveSource: null, postConquestTroops: 0,
     winner: null, currentFaction: "player", combatMsg: "", aiQueue: [], aiMsg: "", log: ["Sin nodos activos con GPS."],
+    cards: [], pendingCard: null, wonCellThisTurn: false,
+    aiHands: { ai1: [], ai2: [], ai3: [] }, aiWonLastTurn: { ai1: false, ai2: false, ai3: false },
   };
 
   const cellMap = new Map<string, MeshNode>();
@@ -499,7 +834,48 @@ function initGame(nodes: MeshNode[]): GameState {
     attackTarget: null, attackSource: null, moveSource: null, postConquestTroops: 0,
     winner: null, currentFaction: "player", combatMsg: "", aiQueue: [], aiMsg: "",
     log: [`Turno 1 — +${reinf} tropas · ${Object.keys(cells).length} territorios`],
+    cards: [], pendingCard: null, wonCellThisTurn: false,
+    aiHands: { ai1: [], ai2: [], ai3: [] }, aiWonLastTurn: { ai1: false, ai2: false, ai3: false },
   };
+}
+
+// ── card trade logic ──────────────────────────────────────────────────────────
+
+function troopBonus(type: CardType): number {
+  return type === "troops5" ? 5 : type === "troops8" ? 8 : type === "troops15" ? 15 : 0;
+}
+
+function findTradeSets(cards: CardType[]): Array<{ indices: number[]; effectType: CardType }> {
+  const sets: Array<{ indices: number[]; effectType: CardType }> = [];
+  const n = cards.length;
+  for (let a = 0; a < n - 2; a++) {
+    for (let b = a + 1; b < n - 1; b++) {
+      for (let c = b + 1; c < n; c++) {
+        const t     = [cards[a], cards[b], cards[c]];
+        const jokers = t.filter(x => x === "comodin").length;
+        const nonJ   = t.filter(x => x !== "comodin");
+        if (jokers === 0 && t[0] === t[1] && t[1] === t[2]) {
+          sets.push({ indices: [a, b, c], effectType: t[0] as CardType });
+        } else if (jokers === 1 && nonJ[0] === nonJ[1]) {
+          sets.push({ indices: [a, b, c], effectType: nonJ[0] });
+        } else if (jokers === 2 && nonJ.length === 1) {
+          sets.push({ indices: [a, b, c], effectType: nonJ[0] });
+        }
+      }
+    }
+  }
+  return sets;
+}
+
+function getSelectionEffect(cards: CardType[], indices: number[]): CardType | null {
+  if (indices.length !== 3) return null;
+  const t      = indices.map(i => cards[i]);
+  const jokers = t.filter(x => x === "comodin").length;
+  const nonJ   = t.filter(x => x !== "comodin");
+  if (jokers === 0 && t[0] === t[1] && t[1] === t[2]) return t[0];
+  if (jokers === 1 && nonJ[0] === nonJ[1])             return nonJ[0];
+  if (jokers === 2 && nonJ.length === 1)               return nonJ[0];
+  return null;
 }
 
 // ── helpers for rendering ─────────────────────────────────────────────────────
@@ -520,6 +896,9 @@ function statusText(gs: GameState): [string, string] {
     }
     case "move_source":    return ["¿DESDE QUÉ TERRITORIO MOVER?", "SELECCIONÁ CON CLIC"];
     case "move_target":    return [`MOVER DESDE ${gs.cells[gs.moveSource!]?.nodeName ?? "?"}`, "¿HACIA DÓNDE? SELECCIONÁ"];
+    case "move_confirm": { const max = (gs.cells[gs.moveSource!]?.troops ?? 2) - 1;
+      return [`MOVER TROPAS: ${gs.postConquestTroops}`, `MÍN: 1  MÁX: ${max}`]; }
+    case "bomb_target":    return ["◉ SELECCIONÁ EL OBJETIVO DE LA BOMBA", "HACÉ CLIC EN UN TERRITORIO ENEMIGO"];
     case "ai_turn":        return [gs.aiMsg || "IA jugando...", ""];
     case "game_over":      return ["FIN DE PARTIDA", gs.winner === "player" ? "¡VICTORIA!" : `GANÓ ${NAMES[gs.winner!]}`];
     default:               return ["", ""];
@@ -529,19 +908,32 @@ function statusText(gs: GameState): [string, string] {
 // ── component ─────────────────────────────────────────────────────────────────
 
 export default function MeshWarsView() {
-  const [gs, setGs]            = useState<GameState | null>(null);
-  const [nodesReady, setReady] = useState(false);
+  const [gs, setGs]               = useState<GameState | null>(null);
+  const [nodesReady, setReady]    = useState(false);
+  const [cardFlash, setCardFlash] = useState(false);
+  const [selectedCards, setSelectedCards] = useState<number[]>([]);
+  const [loseAllFlash, setLoseAllFlash] = useState(false);
+  const [blinkVisible, setBlinkVisible] = useState(true);
+  const [introState, setIntroState] = useState<"start" | "typing" | "done">("start");
+  const [introChars, setIntroChars] = useState(0);
+  const [introCursor, setIntroCursor] = useState(true);
+  const introStopRef = useRef<(() => void) | null>(null);
+  const introTextRef = useRef<HTMLDivElement>(null);
   const nodesRef               = useRef<MeshNode[]>([]);
   const mapRef                 = useRef<L.Map | null>(null);
   const containerRef           = useRef<HTMLDivElement>(null);
   const polygonsRef            = useRef<Map<string, L.Polygon>>(new Map());
+  const infraRingsRef          = useRef<L.Polygon[]>([]);
   const troopMarkersRef        = useRef<Map<string, L.Marker>>(new Map());
   const bridgeLinesRef         = useRef<L.Polyline[]>([]);
   const gsRef                  = useRef<GameState | null>(null);
   const fittedRef              = useRef(false);
   const aiTimerRef             = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const aiFinalRef             = useRef<{ cells: Record<string, GameCell>; turn: number; reinf: number; winner: Faction | null } | null>(null);
+  const aiFinalRef             = useRef<{ cells: Record<string, GameCell>; turn: number; reinf: number; winner: Faction | null; aiHands: Record<string, CardType[]>; aiWonLastTurn: Record<string, boolean>; playerCards: CardType[] } | null>(null);
   const lastCensusTurnRef      = useRef(-1);
+  const loseAllTimerRef        = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRechargeRef     = useRef<string | null>(null);
+  const prevCardsRef           = useRef(0);
   gsRef.current = gs;
 
   // AI animation loop — fires each time the queue shrinks
@@ -557,32 +949,69 @@ export default function MeshWarsView() {
     if (event.type === "reinforce") {
       if (mapRef.current) {
         const [lat, lon] = cellToLatLng(event.cellId);
-        mapRef.current.flyTo([lat, lon], mapRef.current.getZoom(), { animate: true, duration: 0.75 });
+        mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.45 });
       }
       // Wait for flyTo to finish + small pause, then show the reinforcement
       const cellId = event.cellId;
       const newTroops = event.troops;
       setTimeout(() => {
-        playTone(660, 0.06, "sine", 0.08);
+        SFX.reinforce();
+        runRechargeFlash(cellId, polygonsRef.current);
         const cell = gsRef.current?.cells[cellId];
         const marker = troopMarkersRef.current.get(cellId);
         if (marker && cell)
           marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(newTroops, cell.isProduction), iconSize: [0, 0], iconAnchor: [0, 0] }));
-      }, 950); // 750ms flyTo + 200ms pause
+      }, 580); // 450ms flyTo + 130ms pause
     }
     if (event.type === "census_start" && mapRef.current)
       runCensusFlash(event.cellIds, polygonsRef.current, mapRef.current);
+    if (event.type === "ai_bomb_attack") {
+      SFX.bomb();
+      if (!event.repelled) runBombFlash(event.targetId, polygonsRef.current);
+      else { playTone(660, 0.1, "sine", 0.15); setTimeout(() => playTone(880, 0.15, "sine", 0.12), 100); }
+    }
     if (event.type === "attack_announce" && mapRef.current) {
-      const [lat, lon] = cellToLatLng(event.fromId);
-      mapRef.current.flyTo([lat, lon], mapRef.current.getZoom(), { animate: true, duration: 0.35 });
+      const isBridgeAttack = !gridDisk(event.fromId, 1).includes(event.toId);
+      if (isBridgeAttack) {
+        const [laF, loF] = cellToLatLng(event.fromId);
+        const [laT, loT] = cellToLatLng(event.toId);
+        mapRef.current.fitBounds([[laF, loF], [laT, loT]], { padding: [100, 100], maxZoom: 12, animate: true, duration: 0.5 });
+      } else {
+        const [lat, lon] = cellToLatLng(event.fromId);
+        mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.45 });
+      }
+    }
+    if (event.type === "production_announce") {
+      SFX.productionAnnounce();
+    }
+    if (event.type === "production_double") {
+      if (mapRef.current) {
+        const [lat, lon] = cellToLatLng(event.cellId);
+        mapRef.current.flyTo([lat, lon], mapRef.current.getZoom(), { animate: true, duration: 0.5 });
+      }
+      const pdCellId = event.cellId;
+      const pdTroops = event.troops;
+      setTimeout(() => {
+        SFX.productionDouble();
+        runProductionFlash(pdCellId, polygonsRef.current);
+        const cell = gsRef.current?.cells[pdCellId];
+        const marker = troopMarkersRef.current.get(pdCellId);
+        if (marker && cell)
+          marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(pdTroops, true), iconSize: [0, 0], iconAnchor: [0, 0] }));
+      }, 600);
     }
 
     let delay = 400;
-    if (event.type === "faction_start")        delay = 1200;
-    else if (event.type === "census_start")    delay = censusDuration(event.cellIds.length);
-    else if (event.type === "reinforce")       delay = 1400;
-    else if (event.type === "attack_announce") delay = 1100;
-    else if (event.type === "attack_result")   delay = 700;
+    if (event.type === "faction_start")             delay = 1200;
+    else if (event.type === "census_start")         delay = censusDuration(event.cellIds.length);
+    else if (event.type === "ai_card_draw")         delay = 1000;
+    else if (event.type === "ai_card_trade")        delay = 1600;
+    else if (event.type === "ai_bomb_attack")       delay = 2000;
+    else if (event.type === "reinforce")            delay = 930;
+    else if (event.type === "attack_announce")      delay = 1100;
+    else if (event.type === "attack_result")        delay = 700;
+    else if (event.type === "production_announce")  delay = 3000;
+    else if (event.type === "production_double")    delay = 1500;
 
     aiTimerRef.current = setTimeout(() => {
       setGs(prev => {
@@ -625,13 +1054,56 @@ export default function MeshWarsView() {
             return { ...base, cells: nc, attackSource: null, attackTarget: null, combatMsg: evt.won ? "¡CONQUISTA!" : "Ataque fallido" };
           }
 
+          case "ai_card_draw":
+            return { ...base, combatMsg: `${NAMES[evt.faction]} recibe carta: ${CARD_META[evt.card].symbol} ${CARD_META[evt.card].label}`, aiMsg: `${NAMES[evt.faction]}: +1 carta (${evt.handSize}/5)` };
+
+          case "ai_card_trade": {
+            const em = CARD_META[evt.effectType];
+            return { ...base, combatMsg: `${NAMES[evt.faction]} canjea → +${evt.bonus} tropas extra  ${em.symbol}${em.symbol}${em.symbol}`, aiMsg: `${NAMES[evt.faction]}: canjea cartas (${evt.handSize}/5 restantes)` };
+          }
+
+          case "ai_bomb_attack": {
+            if (evt.repelled) {
+              return {
+                ...base,
+                combatMsg: `◉ BOMBA ${NAMES[evt.faction]} — ANTIBOMBA activa! Ataque repelido`,
+                aiMsg: `${NAMES[evt.faction]}: bomba repelida`,
+              };
+            }
+            const tgt = prev.cells[evt.targetId];
+            return {
+              ...base,
+              cells: { ...prev.cells, [evt.targetId]: { ...tgt, troops: evt.remaining } },
+              combatMsg: `◉ BOMBA ${NAMES[evt.faction]}! ${tgt?.nodeName ?? "?"} pierde ${evt.troopsLost} tropas (${evt.remaining} restantes)`,
+              aiMsg: `${NAMES[evt.faction]}: ataque bomba`,
+            };
+          }
+
+          case "production_announce":
+            return { ...base, aiMsg: "★ PRODUCCIÓN DE LUCAÍNA-T ★", combatMsg: "Los centros de infraestructura duplican tropas" };
+
+          case "production_double": {
+            const cell = prev.cells[evt.cellId];
+            const prevTroops = Math.floor(evt.troops / 2);
+            return { ...base, cells: { ...prev.cells, [evt.cellId]: { ...cell, troops: evt.troops } }, aiMsg: `★ ${cell.nodeName}: ${prevTroops} → ${evt.troops}`, combatMsg: "Lucaína-T duplicando producción..." };
+          }
+
           case "done": {
             const f = aiFinalRef.current!;
+            let newCards = f.playerCards;  // base = player cards after AI bombs / antibomba consumed
+            let newPending = prev.pendingCard;
+            if (prev.wonCellThisTurn) {
+              const drawn = drawCard(newCards);
+              if (newCards.length < 5) newCards = [...newCards, drawn];
+              else if (!prev.pendingCard)  newPending = drawn;
+            }
             return {
               ...base, cells: f.cells, phase: f.winner ? "game_over" : "reinforcement",
               turn: f.turn, reinforcementsLeft: f.reinf, winner: f.winner,
               currentFaction: f.winner ?? "player",
               aiQueue: [], aiMsg: "", attackSource: null, attackTarget: null,
+              cards: newCards, pendingCard: newPending, wonCellThisTurn: false,
+              aiHands: f.aiHands, aiWonLastTurn: f.aiWonLastTurn,
               combatMsg: f.winner ? `¡${NAMES[f.winner]} dominó la Mesh!` : "",
               log: [`TURNO ${f.turn} — +${f.reinf} TROPAS`, ...prev.log.slice(0, 9)],
             };
@@ -645,13 +1117,90 @@ export default function MeshWarsView() {
     return () => { if (aiTimerRef.current) clearTimeout(aiTimerRef.current); };
   }, [gs?.phase, gs?.aiQueue?.length]);
 
+  useEffect(() => { if (!cardFlash) setSelectedCards([]); }, [cardFlash]);
+
+  // Show card panel when cards increase; detect lose_all
+  useEffect(() => {
+    const cur = gs?.cards.length ?? 0;
+    if (cur > prevCardsRef.current) {
+      setCardFlash(true);
+      const newestCard = gsRef.current?.cards[cur - 1];
+      if (newestCard === "lose_all") {
+        setLoseAllFlash(true);
+        [350, 270, 200, 150].forEach((f, i) => setTimeout(() => playTone(f, 0.4, "sawtooth", 0.2), i * 200));
+        if (loseAllTimerRef.current) clearTimeout(loseAllTimerRef.current);
+        loseAllTimerRef.current = setTimeout(() => {
+          setGs(prev => prev ? { ...prev, cards: [] } : prev);
+          prevCardsRef.current = 0;
+          setLoseAllFlash(false);
+          setCardFlash(false);
+          setSelectedCards([]);
+        }, 3000);
+      }
+    }
+    prevCardsRef.current = cur; // always sync so future draws are detected correctly
+  }, [gs?.cards.length]);
+
+  // Show card panel when pending card arrives (hand was full)
+  useEffect(() => {
+    if (gs?.pendingCard) setCardFlash(true);
+  }, [gs?.pendingCard]);
+
+  // Blink toggle for lose_all animation
+  useEffect(() => {
+    if (!loseAllFlash) { setBlinkVisible(true); return; }
+    const id = setInterval(() => setBlinkVisible(v => !v), 280);
+    return () => clearInterval(id);
+  }, [loseAllFlash]);
+
+  // Intro cursor blink
+  useEffect(() => {
+    if (introState !== "typing") { setIntroCursor(true); return; }
+    const id = setInterval(() => setIntroCursor(v => !v), 500);
+    return () => clearInterval(id);
+  }, [introState]);
+
+  // Intro typewriter
+  useEffect(() => {
+    if (introState !== "typing") return;
+    let pos = 0;
+    let timerId: ReturnType<typeof setTimeout>;
+    const advance = () => {
+      if (pos >= INTRO_TEXT.length) { setIntroState("done"); return; }
+      const ch = INTRO_TEXT[pos++];
+      setIntroChars(pos);
+      if (ch !== "\n" && ch !== " ") {
+        playTone(200 + Math.random() * 80, 0.045, "square", 0.06);
+      }
+      let delay = 52;
+      if (ch === "\n" && INTRO_TEXT[pos] === "\n") delay = 700;
+      else if (ch === "\n") delay = 140;
+      else if (ch === "." || ch === "!" || ch === "¡") delay = 380;
+      timerId = setTimeout(advance, delay);
+    };
+    timerId = setTimeout(advance, 600);
+    return () => clearTimeout(timerId);
+  }, [introState]);
+
+  // Auto-scroll intro text to bottom as it types and when done
+  useEffect(() => {
+    if (introTextRef.current)
+      introTextRef.current.scrollTop = introTextRef.current.scrollHeight;
+  }, [introChars]);
+
+  useEffect(() => {
+    if (introState === "done" && introTextRef.current)
+      introTextRef.current.scrollTop = introTextRef.current.scrollHeight;
+  }, [introState]);
+
   useEffect(() => {
     fetchGraph().then(d => { nodesRef.current = d.nodes; setReady(true); });
   }, []);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    mapRef.current = L.map(containerRef.current, { center: [-38.72, -62.26], zoom: 12 });
+    mapRef.current = L.map(containerRef.current, { center: [-38.72, -62.26], zoom: 12, zoomControl: false });
+    L.control.zoom({ position: "bottomright" }).addTo(mapRef.current);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap", maxZoom: 19,
     }).addTo(mapRef.current);
@@ -663,13 +1212,18 @@ export default function MeshWarsView() {
     const map = mapRef.current;
 
     polygonsRef.current.forEach(p => p.remove()); polygonsRef.current.clear();
+    infraRingsRef.current.forEach(p => p.remove()); infraRingsRef.current = [];
     troopMarkersRef.current.forEach(m => m.remove()); troopMarkersRef.current.clear();
     bridgeLinesRef.current.forEach(l => l.remove()); bridgeLinesRef.current = [];
 
     // Compute highlight sets
-    const validTargets  = new Set<string>();
-    const validSources  = new Set<string>();
+    const validTargets      = new Set<string>();
+    const validSources      = new Set<string>();
+    const validBombTargets  = new Set<string>();
 
+    if (gs.phase === "bomb_target") {
+      Object.values(gs.cells).forEach(c => { if (c.owner !== "player") validBombTargets.add(c.h3Index); });
+    }
     if (gs.phase === "attack_target") {
       Object.values(gs.cells).forEach(c => {
         if (c.owner !== "player") return;
@@ -700,10 +1254,11 @@ export default function MeshWarsView() {
       const isSrc    = gs.attackSource === cell.h3Index || gs.moveSource === cell.h3Index;
       const isVT     = validTargets.has(cell.h3Index);
       const isVS     = validSources.has(cell.h3Index);
+      const isVBT    = validBombTargets.has(cell.h3Index);
 
-      const fillOp   = isAtk ? 0.85 : isSrc ? 0.85 : isVT ? 0.6 : isVS ? 0.65 : cell.isSynthetic ? 0.28 : 0.45;
-      const border   = isAtk ? "#ffeb3b" : isSrc ? "#ffffff" : isVT ? "#ffeb3b" : isVS ? "#ffffff" : color;
-      const bWeight  = isAtk || isSrc || isVT || isVS ? 2.5 : cell.isSynthetic ? 1 : 1.5;
+      const fillOp   = isAtk ? 0.85 : isSrc ? 0.85 : isVT ? 0.6 : isVS ? 0.65 : isVBT ? 0.65 : cell.isSynthetic ? 0.28 : 0.45;
+      const border   = isAtk ? "#ffeb3b" : isSrc ? "#ffffff" : isVT ? "#ffeb3b" : isVS ? "#ffffff" : isVBT ? "#ff7043" : color;
+      const bWeight  = isAtk || isSrc || isVT || isVS || isVBT ? 2.5 : cell.isSynthetic ? 1 : 1.5;
       const dashArr  = cell.isSynthetic ? "4 3" : undefined;
 
       const poly = L.polygon(bnd, { fillColor: color, fillOpacity: fillOp, color: border, weight: bWeight, dashArray: dashArr });
@@ -717,13 +1272,15 @@ export default function MeshWarsView() {
 
       const cellId = cell.h3Index;
       poly.on("click", () => {
+        setCardFlash(false);
         const state = gsRef.current;
         if (!state || state.phase === "game_over" || state.phase === "action") return;
         const cur = state.cells[cellId];
 
         if (state.phase === "reinforcement") {
           if (cur.owner !== "player" || state.reinforcementsLeft <= 0) return;
-          playTone(660, 0.07, "sine", 0.12);
+          SFX.reinforce();
+          pendingRechargeRef.current = cellId;
           setGs(prev => {
             if (!prev) return prev;
             const left = prev.reinforcementsLeft - 1;
@@ -759,6 +1316,39 @@ export default function MeshWarsView() {
           return;
         }
 
+        if (state.phase === "bomb_target") {
+          if (cur.owner === "player") return;
+          SFX.bomb();
+          runBombFlash(cellId, polygonsRef.current);
+          setGs(prev => {
+            if (!prev) return prev;
+            const cell = prev.cells[cellId];
+            const defFaction = cell.owner;
+            const defHand    = prev.aiHands[defFaction] ?? [];
+            const abIdx      = defHand.indexOf("antibomba");
+            if (abIdx >= 0) {
+              const newDefHand = defHand.filter((_, i) => i !== abIdx);
+              return {
+                ...prev, phase: "action", attackTarget: null,
+                aiHands: { ...prev.aiHands, [defFaction]: newDefHand },
+                combatMsg: `ANTIBOMBA! ${NAMES[defFaction]} repele el ataque`,
+                log: [`ANTIBOMBA de ${NAMES[defFaction]} repelió la bomba`, ...prev.log.slice(0, 9)],
+              };
+            }
+            const troops    = cell.troops;
+            const lossPct   = 0.5 + Math.random() * 0.4;
+            const lost      = Math.max(1, Math.floor(troops * lossPct));
+            const remaining = Math.max(1, troops - lost);
+            return {
+              ...prev, phase: "action", attackTarget: null,
+              cells: { ...prev.cells, [cellId]: { ...cell, troops: remaining } },
+              combatMsg: `◉ BOMBA! ${cell.nodeName} pierde ${lost} tropas (${remaining} restantes)`,
+              log: [`◉ BOMBA: ${cell.nodeName} ${troops}→${remaining} tropas`, ...prev.log.slice(0, 9)],
+            };
+          });
+          return;
+        }
+
         if (state.phase === "move_source") {
           if (cur.owner !== "player" || cur.troops <= 1) return;
           setGs(prev => prev ? { ...prev, moveSource: cellId, phase: "move_target", combatMsg: "" } : prev);
@@ -768,28 +1358,27 @@ export default function MeshWarsView() {
         if (state.phase === "move_target") {
           if (cur.owner !== "player" || cellId === state.moveSource) return;
           if (!cellNeighbors(state.moveSource!, state.cells, state.bridges).includes(cellId)) return;
-          SFX.move();
-          setGs(prev => {
-            if (!prev?.moveSource) return prev;
-            const src = prev.cells[prev.moveSource], dst = prev.cells[cellId];
-            const moving = src.troops - 1;
-            return {
-              ...prev,
-              cells: {
-                ...prev.cells,
-                [prev.moveSource]: { ...src, troops: 1 },
-                [cellId]: { ...dst, troops: dst.troops + moving },
-              },
-              moveSource: null, phase: "action",
-              combatMsg: `MOVIÓ ${moving} TROPAS`,
-            };
-          });
+          SFX.select();
+          setGs(prev => prev ? {
+            ...prev, phase: "move_confirm",
+            attackTarget: cellId, postConquestTroops: 1, combatMsg: "",
+          } : prev);
           return;
         }
       });
 
       poly.addTo(map);
       polygonsRef.current.set(cell.h3Index, poly);
+
+      if (cell.isProduction) {
+        const [cLat, cLon] = cellToLatLng(cell.h3Index);
+        for (const ratio of [0.75, 0.5, 0.25]) {
+          const ring = bnd.map(([la, lo]) => [cLat + (la - cLat) * ratio, cLon + (lo - cLon) * ratio] as [number, number]);
+          const rPoly = L.polygon(ring, { fillOpacity: 0, color, weight: 1, interactive: false });
+          rPoly.addTo(map);
+          infraRingsRef.current.push(rPoly);
+        }
+      }
 
       // Troop count marker
       const [cLat, cLon] = cellToLatLng(cell.h3Index);
@@ -804,9 +1393,10 @@ export default function MeshWarsView() {
     // Bridges
     for (const bridge of gs.bridges) {
       const [la, lo] = cellToLatLng(bridge.fromH3), [lb, ll] = cellToLatLng(bridge.toH3);
-      const lit = gs.attackSource === bridge.fromH3 || gs.attackSource === bridge.toH3
-               || gs.attackTarget === bridge.fromH3 || gs.attackTarget === bridge.toH3
-               || gs.moveSource   === bridge.fromH3 || gs.moveSource   === bridge.toH3;
+      const isAttackBridge = (gs.attackSource === bridge.fromH3 && gs.attackTarget === bridge.toH3)
+                          || (gs.attackSource === bridge.toH3   && gs.attackTarget === bridge.fromH3);
+      const isMoveBridge   = gs.moveSource === bridge.fromH3 || gs.moveSource === bridge.toH3;
+      const lit = isAttackBridge || isMoveBridge;
       const line = L.polyline([[la, lo], [lb, ll]], {
         color: lit ? "#ffeb3b" : "#000", weight: lit ? 6 : 4, opacity: lit ? 1 : 0.85,
       });
@@ -817,6 +1407,12 @@ export default function MeshWarsView() {
     if (!fittedRef.current && Object.keys(gs.cells).length > 0) {
       fittedRef.current = true;
       map.fitBounds(L.latLngBounds(Object.keys(gs.cells).map(id => cellToLatLng(id) as [number, number])), { padding: [40, 40] });
+    }
+
+    if (pendingRechargeRef.current) {
+      const id = pendingRechargeRef.current;
+      pendingRechargeRef.current = null;
+      runRechargeFlash(id, polygonsRef.current);
     }
   }, [gs]);
 
@@ -834,6 +1430,7 @@ export default function MeshWarsView() {
   // ── actions ──────────────────────────────────────────────────────────────────
 
   function handleButton(action: "attack" | "attack_confirm" | "troop_plus" | "troop_minus" | "troop_confirm" | "move" | "pass" | "skip_ai" | "cancel") {
+    setCardFlash(false);
     // One manual round of combat per click
     if (action === "attack_confirm") {
       SFX.attack();
@@ -866,6 +1463,7 @@ export default function MeshWarsView() {
                 ...prev, cells: next, winner,
                 phase: winner ? "game_over" : "action",
                 attackTarget: null, attackSource: null, postConquestTroops: 0,
+                wonCellThisTurn: true,
                 combatMsg: `¡CONQUISTA! — ${roundMsg}`,
                 log: [`¡CONQUISTA! +1 tropa`, ...prev.log.slice(0, 9)],
               };
@@ -875,6 +1473,7 @@ export default function MeshWarsView() {
             return {
               ...prev, cells: next,
               phase: "post_conquest",
+              wonCellThisTurn: true,
               postConquestTroops: 1,
               combatMsg: `¡CONQUISTA! — ${roundMsg}`,
             };
@@ -905,12 +1504,34 @@ export default function MeshWarsView() {
     setGs(prev => {
       if (!prev) return prev;
 
-      if (action === "troop_plus" && prev.phase === "post_conquest") {
-        const max = (prev.cells[prev.attackSource!]?.troops ?? 2) - 1;
+      if (action === "troop_plus" && (prev.phase === "post_conquest" || prev.phase === "move_confirm")) {
+        const max = prev.phase === "move_confirm"
+          ? (prev.cells[prev.moveSource!]?.troops ?? 2) - 1
+          : (prev.cells[prev.attackSource!]?.troops ?? 2) - 1;
         return { ...prev, postConquestTroops: Math.min(prev.postConquestTroops + 1, max) };
       }
-      if (action === "troop_minus" && prev.phase === "post_conquest") {
+      if (action === "troop_minus" && (prev.phase === "post_conquest" || prev.phase === "move_confirm")) {
         return { ...prev, postConquestTroops: Math.max(prev.postConquestTroops - 1, 1) };
+      }
+      if (action === "troop_confirm" && prev.phase === "move_confirm") {
+        const from = prev.cells[prev.moveSource!];
+        const to   = prev.cells[prev.attackTarget!];
+        const n    = prev.postConquestTroops;
+        const newCells = {
+          ...prev.cells,
+          [prev.moveSource!]:   { ...from, troops: from.troops - n },
+          [prev.attackTarget!]: { ...to,   troops: to.troops + n },
+        };
+        SFX.move();
+        const newTurn = prev.turn + 1;
+        const { events, finalCells, winner, reinf, newAiHands, newAiWonLastTurn, newPlayerCards } =
+          planAITurns(newCells, prev.bridges, prev.islands, newTurn, prev.aiHands, prev.aiWonLastTurn, prev.cards);
+        aiFinalRef.current = { cells: finalCells, turn: newTurn, reinf, winner, aiHands: newAiHands, aiWonLastTurn: newAiWonLastTurn, playerCards: newPlayerCards };
+        return {
+          ...prev, cells: newCells,
+          phase: "ai_turn", aiQueue: events, aiMsg: "",
+          moveSource: null, attackTarget: null, postConquestTroops: 0, combatMsg: "",
+        };
       }
       if (action === "troop_confirm" && prev.phase === "post_conquest") {
         const from = prev.cells[prev.attackSource!];
@@ -927,6 +1548,7 @@ export default function MeshWarsView() {
           ...prev, cells: next, winner,
           phase: winner ? "game_over" : "action",
           attackTarget: null, attackSource: null, postConquestTroops: 0,
+          wonCellThisTurn: true,
           combatMsg: `MOVIÓ ${n} TROPAS`,
           log: [`¡CONQUISTA! +${n} tropas`, ...prev.log.slice(0, 9)],
         };
@@ -942,8 +1564,8 @@ export default function MeshWarsView() {
       if (action === "pass" && (prev.phase === "action" || prev.phase === "reinforcement")) {
         SFX.pass();
         const newTurn = prev.turn + 1;
-        const { events, finalCells, winner, reinf } = planAITurns(prev.cells, prev.bridges, prev.islands, newTurn);
-        aiFinalRef.current = { cells: finalCells, turn: newTurn, reinf, winner };
+        const { events, finalCells, winner, reinf, newAiHands, newAiWonLastTurn, newPlayerCards } = planAITurns(prev.cells, prev.bridges, prev.islands, newTurn, prev.aiHands, prev.aiWonLastTurn, prev.cards);
+        aiFinalRef.current = { cells: finalCells, turn: newTurn, reinf, winner, aiHands: newAiHands, aiWonLastTurn: newAiWonLastTurn, playerCards: newPlayerCards };
         return {
           ...prev,
           phase: "ai_turn",
@@ -957,11 +1579,20 @@ export default function MeshWarsView() {
         if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
         const f = aiFinalRef.current;
         if (!f) return prev;
+        let newCards = f.playerCards;
+        let newPending = prev.pendingCard;
+        if (prev.wonCellThisTurn) {
+          const drawn = drawCard(newCards);
+          if (newCards.length < 5) newCards = [...newCards, drawn];
+          else if (!prev.pendingCard)  newPending = drawn;
+        }
         return {
           ...prev, cells: f.cells, phase: f.winner ? "game_over" : "reinforcement",
           turn: f.turn, reinforcementsLeft: f.reinf, winner: f.winner,
           currentFaction: f.winner ?? "player",
           aiQueue: [], aiMsg: "", attackSource: null, attackTarget: null,
+          cards: newCards, pendingCard: newPending, wonCellThisTurn: false,
+          aiHands: f.aiHands, aiWonLastTurn: f.aiWonLastTurn,
           combatMsg: f.winner ? `¡${NAMES[f.winner]} dominó la Mesh!` : "",
           log: [`TURNO ${f.turn} — +${f.reinf} TROPAS`, ...prev.log.slice(0, 9)],
         };
@@ -982,10 +1613,59 @@ export default function MeshWarsView() {
     setGs(initGame(nodesRef.current));
   }
 
+  function handleTrade(indices: number[], effectType: CardType) {
+    setCardFlash(false);
+    setGs(prev => {
+      if (!prev) return prev;
+      const newCards = prev.cards.filter((_, i) => !indices.includes(i));
+      if (effectType === "bomba") {
+        return {
+          ...prev, cards: newCards,
+          phase: "bomb_target",
+          attackTarget: null, attackSource: null,
+          combatMsg: "◉ BOMBA LISTA — seleccioná el objetivo",
+        };
+      }
+      const bonus = troopBonus(effectType);
+      const meta  = CARD_META[effectType];
+      return {
+        ...prev, cards: newCards,
+        reinforcementsLeft: prev.reinforcementsLeft + bonus,
+        combatMsg: bonus > 0
+          ? `+${bonus} TROPAS al refuerzo (${meta.label} canjeadas)`
+          : `${meta.label} — efecto pendiente`,
+      };
+    });
+  }
+
+  function handleDiscard(index: number) {
+    const isLoseAll = gsRef.current?.pendingCard === "lose_all";
+    setGs(prev => {
+      if (!prev?.pendingCard) return prev;
+      const kept = prev.cards.filter((_, i) => i !== index);
+      return { ...prev, cards: [...kept, prev.pendingCard!], pendingCard: null };
+    });
+    if (isLoseAll) {
+      setLoseAllFlash(true);
+      [350, 270, 200, 150].forEach((f, i) => setTimeout(() => playTone(f, 0.4, "sawtooth", 0.2), i * 200));
+      if (loseAllTimerRef.current) clearTimeout(loseAllTimerRef.current);
+      loseAllTimerRef.current = setTimeout(() => {
+        setGs(prev => prev ? { ...prev, cards: [] } : prev);
+        prevCardsRef.current = 0;
+        setLoseAllFlash(false);
+        setCardFlash(false);
+        setSelectedCards([]);
+      }, 3000);
+    }
+  }
+
   // ── render ────────────────────────────────────────────────────────────────────
+
+  const selectionEffect = cardFlash && gs ? getSelectionEffect(gs.cards, selectedCards) : null;
 
   const factionList: Faction[] = ["player", "ai1", "ai2", "ai3"];
 
+  const totalCells = gs ? Object.keys(gs.cells).length : 0;
   const scoreRows = gs
     ? factionList.map(f => ({
         f,
@@ -1009,6 +1689,7 @@ export default function MeshWarsView() {
   const inAction       = gs?.phase === "action";
   const inConfirm      = gs?.phase === "attack_confirm";
   const inPostConquest = gs?.phase === "post_conquest";
+  const inMoveConfirm  = gs?.phase === "move_confirm";
   const inAiTurn       = gs?.phase === "ai_turn";
   const canCancel      = gs ? !["action", "reinforcement", "post_conquest", "ai_turn", "game_over"].includes(gs.phase) : false;
 
@@ -1021,28 +1702,133 @@ export default function MeshWarsView() {
 
         {/* Score panel — top left overlay */}
         {gs && (
-          <div style={{
-            position: "absolute", top: 10, left: 10, zIndex: 1000,
-            background: "rgba(0,0,0,0.88)", border: "1px solid #1976d2",
-            padding: "6px 10px", fontFamily: "monospace", fontSize: 13,
-            minWidth: 200,
-          }}>
-            {scoreRows.map(({ f, territories, islands }) => (
-              <div key={f} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2 }}>
-                <span style={{ color: "#ccc", width: 12 }}>
-                  {f === gs.currentFaction && gs.phase !== "game_over" ? "▶" : " "}
+          <>
+            <style>{`
+              @keyframes mw-pulse {
+                0%, 100% { background-color: transparent; }
+                50%       { background-color: var(--pulse-color); }
+              }
+            `}</style>
+            <div style={{
+              position: "absolute", top: 12, left: 12, zIndex: 1000,
+              background: "rgba(210,216,226,0.97)",
+              backdropFilter: "blur(10px)",
+              WebkitBackdropFilter: "blur(10px)",
+              border: "1px solid rgba(0,0,0,0.12)",
+              borderRadius: 14,
+              overflow: "hidden",
+              padding: "10px 14px 10px",
+              fontFamily: "monospace",
+              minWidth: 250,
+              boxShadow: "0 4px 20px rgba(0,0,0,0.22)",
+            }}>
+              {/* Header */}
+              <div style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                marginBottom: 8, paddingBottom: 7,
+                borderBottom: "1px solid rgba(0,0,0,0.08)",
+              }}>
+                <span style={{ color: "#888", fontSize: 10, fontWeight: 800, letterSpacing: 3 }}>
+                  MESH WARS
                 </span>
-                <span style={{ color: COLORS[f], width: 72, fontWeight: 700 }}>{NAMES[f]}</span>
-                <span style={{ color: "#fff", width: 28, textAlign: "right" }}>{territories}</span>
-                <span style={{ color: "#888" }}>C&gt;</span>
-                <span style={{ color: "#ffd700" }}>{islands}</span>
+                <span style={{ color: "#888", fontSize: 10, fontWeight: 800, letterSpacing: 2 }}>
+                  TURNO {gs.turn}
+                </span>
               </div>
-            ))}
+
+              {/* Faction rows */}
+              {scoreRows.map(({ f, territories, islands }) => {
+                const isActive = f === gs.currentFaction && gs.phase !== "game_over";
+                const pct = totalCells > 0 ? (territories / totalCells) * 100 : 0;
+                return (
+                  <div
+                    key={f}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "6px 8px",
+                      marginBottom: 3,
+                      borderRadius: 8,
+                      borderLeft: `4px solid ${isActive ? COLORS[f] : COLORS[f] + "40"}`,
+                      // CSS var for the keyframe
+                      ["--pulse-color" as any]: `${COLORS[f]}18`,
+                      animation: isActive ? "mw-pulse 1.6s ease-in-out infinite" : "none",
+                      transition: "border-color 0.3s",
+                    }}
+                  >
+                    {/* Name */}
+                    <span style={{
+                      color: isActive ? COLORS[f] : COLORS[f] + "77",
+                      width: 62, fontSize: isActive ? 14 : 12,
+                      fontWeight: 800, letterSpacing: 1,
+                      transition: "all 0.3s",
+                    }}>
+                      {NAMES[f]}
+                    </span>
+
+                    {/* Bar + numbers */}
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                        <span style={{
+                          color: isActive ? "#111" : "#777",
+                          fontSize: isActive ? 22 : 15,
+                          fontWeight: 800, lineHeight: 1,
+                          transition: "all 0.3s",
+                        }}>
+                          {territories}
+                        </span>
+                        {islands > 0 && (
+                          <span style={{ color: isActive ? "#c8960a" : "#c8960a66", fontSize: 10, fontWeight: 700 }}>
+                            {islands}★
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ height: isActive ? 4 : 2, background: "rgba(0,0,0,0.07)", borderRadius: 2, overflow: "hidden", transition: "height 0.3s" }}>
+                        <div style={{
+                          height: "100%", width: `${pct}%`,
+                          background: isActive ? COLORS[f] : COLORS[f] + "66",
+                          borderRadius: 2,
+                          transition: "width 0.5s ease",
+                        }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* Card hand — bottom right of map (compact overlay) */}
+        {gs && gs.cards.length > 0 && !cardFlash && (
+          <div style={{
+            position: "absolute", bottom: 10, right: 10, zIndex: 1000,
+            display: "flex", gap: 4, alignItems: "flex-end",
+          }}>
+            {gs.cards.map((card, i) => {
+              const m = CARD_META[card];
+              return (
+                <div key={i} style={{
+                  width: 56, height: 80,
+                  background: m.bg,
+                  border: `2px solid ${m.color}`,
+                  borderRadius: 6,
+                  display: "flex", flexDirection: "column",
+                  alignItems: "center", justifyContent: "center",
+                  gap: 3,
+                  boxShadow: `0 3px 10px rgba(0,0,0,0.7)`,
+                  fontFamily: "monospace",
+                }}>
+                  <span style={{ fontSize: 32, color: m.color, lineHeight: 1 }}>{m.symbol}</span>
+                  <span style={{ fontSize: 13, color: m.color, fontWeight: 700, lineHeight: 1 }}>{m.label}</span>
+                  <span style={{ fontSize: 10, color: m.color, opacity: 0.75, lineHeight: 1 }}>{m.sub}</span>
+                </div>
+              );
+            })}
           </div>
         )}
 
         {/* Start screen */}
-        {!gs && (
+        {!gs && introState === "start" && (
           <div style={{
             position: "absolute", inset: 0, display: "flex", flexDirection: "column",
             alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.7)", zIndex: 2000,
@@ -1054,7 +1840,62 @@ export default function MeshWarsView() {
               {nodesReady ? "Datos de la mesh cargados" : "Cargando nodos..."}
             </div>
             {nodesReady && (
-              <button style={btnStyle("#c62828")} onClick={startGame}>⚔ COMENZAR PARTIDA</button>
+              <button style={btnStyle("#c62828")} onClick={() => {
+                introStopRef.current = startIntroMusic();
+                setIntroChars(0);
+                setIntroState("typing");
+              }}>⚔ COMENZAR PARTIDA</button>
+            )}
+          </div>
+        )}
+
+        {/* Intro typewriter screen */}
+        {!gs && introState !== "start" && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 2000,
+            background: "#000",
+            display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center",
+            padding: "40px 10%",
+            boxSizing: "border-box",
+          }}>
+            <div ref={introTextRef} style={{
+              fontFamily: "monospace", color: "#00e676", fontSize: 19, lineHeight: 1.9,
+              whiteSpace: "pre-wrap", maxWidth: 680, width: "100%",
+              textShadow: "0 0 8px #00e67666",
+              overflowY: "hidden", maxHeight: "75vh",
+              paddingBottom: introState === "done" ? "100px" : "0",
+              boxSizing: "border-box",
+            }}>
+              {INTRO_TEXT.slice(0, introChars)}
+              {introState === "typing" && (
+                <span style={{ opacity: introCursor ? 1 : 0, color: "#00e676" }}>█</span>
+              )}
+            </div>
+            {introState === "typing" && (
+              <button
+                style={{
+                  position: "absolute", top: 16, right: 16,
+                  background: "transparent", border: "1px solid #00e67666",
+                  color: "#00e676aa", fontFamily: "monospace", fontSize: 12,
+                  padding: "4px 10px", borderRadius: 4, cursor: "pointer",
+                }}
+                onClick={() => {
+                  setIntroChars(INTRO_TEXT.length);
+                  setIntroState("done");
+                }}
+              >SALTAR »</button>
+            )}
+            {introState === "done" && (
+              <button
+                style={{ ...btnStyle("#c62828"), position: "absolute", bottom: 40, left: "50%", transform: "translateX(-50%)" }}
+                onClick={() => {
+                  introStopRef.current?.();
+                  introStopRef.current = null;
+                  setIntroState("start");
+                  startGame();
+                }}
+              >⚔ INICIAR LA GUERRA</button>
             )}
           </div>
         )}
@@ -1096,7 +1937,7 @@ export default function MeshWarsView() {
               onClick={() => handleButton("skip_ai")}
               style={{ ...btnStyle("#455a64"), fontSize: 16, padding: "12px 32px", letterSpacing: 2 }}
             >⏭ SALTAR</button>
-          ) : inPostConquest ? (
+          ) : inPostConquest || inMoveConfirm ? (
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <button
                 onClick={() => handleButton("troop_minus")}
@@ -1151,12 +1992,197 @@ export default function MeshWarsView() {
           )}
         </div>
 
-        {/* Right: combat info */}
+        {/* Right: card flash or combat info */}
         <div style={{
-          flex: 1, padding: "12px 20px", display: "flex", flexDirection: "column",
-          justifyContent: "center",
+          flex: 1, padding: "10px 16px", display: "flex", flexDirection: "column",
+          justifyContent: "center", overflowY: "auto",
         }}>
-          {gs?.combatMsg ? (
+          {gs?.pendingCard ? (
+            /* ── Discard chooser (hand was full) ── */
+            <>
+              <div style={{ color: "#ffd700", fontFamily: "monospace", fontSize: 11, fontWeight: 700, marginBottom: 6, letterSpacing: 1 }}>
+                MANO LLENA — hacé clic en una carta para descartarla
+              </div>
+              <div style={{ display: "flex", gap: 4, alignItems: "flex-end", flexWrap: "wrap" }}>
+                {/* Pending (new) card — display only */}
+                {(() => {
+                  const m = CARD_META[gs.pendingCard!];
+                  return (
+                    <div style={{
+                      width: 62, height: 88, background: m.bg,
+                      border: "2px solid #ffd700", borderRadius: 6,
+                      display: "flex", flexDirection: "column",
+                      alignItems: "center", justifyContent: "center",
+                      gap: 3, padding: "4px 3px",
+                      boxShadow: "0 0 14px #ffd70066",
+                      fontFamily: "monospace", position: "relative",
+                    }}>
+                      <div style={{
+                        position: "absolute", top: -9, left: "50%", transform: "translateX(-50%)",
+                        background: "#ffd700", color: "#000", fontSize: 8, fontWeight: 700,
+                        padding: "2px 5px", borderRadius: 3, whiteSpace: "nowrap",
+                      }}>NUEVA</div>
+                      <span style={{ fontSize: 34, color: m.color, lineHeight: 1 }}>{m.symbol}</span>
+                      <span style={{ fontSize: 13, color: m.color, fontWeight: 700, lineHeight: 1 }}>{m.label}</span>
+                      <span style={{ fontSize: 10, color: m.color, opacity: 0.75, lineHeight: 1 }}>{m.sub}</span>
+                    </div>
+                  );
+                })()}
+                <div style={{ width: 1, height: 70, background: "#30363d", alignSelf: "center", margin: "0 2px" }} />
+                {/* Existing cards — click to discard */}
+                {gs.cards.map((card, i) => {
+                  const m = CARD_META[card];
+                  return (
+                    <div key={i} onClick={() => handleDiscard(i)} style={{
+                      width: 62, height: 88, background: m.bg,
+                      border: "2px solid #c62828", borderRadius: 6,
+                      display: "flex", flexDirection: "column",
+                      alignItems: "center", justifyContent: "center",
+                      gap: 3, padding: "4px 3px",
+                      fontFamily: "monospace", position: "relative",
+                      cursor: "pointer",
+                    }}>
+                      <div style={{
+                        position: "absolute", top: 2, right: 4,
+                        color: "#f44336", fontSize: 10, fontWeight: 900, lineHeight: 1,
+                      }}>✕</div>
+                      <span style={{ fontSize: 34, color: m.color, lineHeight: 1 }}>{m.symbol}</span>
+                      <span style={{ fontSize: 13, color: m.color, fontWeight: 700, lineHeight: 1 }}>{m.label}</span>
+                      <span style={{ fontSize: 10, color: m.color, opacity: 0.75, lineHeight: 1 }}>{m.sub}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : cardFlash && gs && gs.cards.length > 0 ? (
+            <>
+              {/* Header */}
+              {loseAllFlash ? (
+                <div style={{
+                  color: blinkVisible ? "#f44336" : "#4a0a0a",
+                  fontFamily: "monospace", fontSize: 12, fontWeight: 700,
+                  marginBottom: 6, letterSpacing: 1,
+                  textShadow: blinkVisible ? "0 0 8px #f44336aa" : "none",
+                  transition: "color 0.1s",
+                }}>☠ ¡PERDÉS TODAS TUS CARTAS!</div>
+              ) : (
+                <div style={{ color: "#42a5f5", fontFamily: "monospace", fontSize: 11, fontWeight: 700, marginBottom: 6, letterSpacing: 1 }}>
+                  CARTAS ({gs.cards.length}/5)
+                  {selectedCards.length < 3 && (
+                    <span style={{ color: "#546e7a", fontWeight: 400, marginLeft: 8 }}>
+                      seleccioná {3 - selectedCards.length} más para canjear
+                    </span>
+                  )}
+                </div>
+              )}
+              {/* Card hand */}
+              <div style={{ display: "flex", gap: 5, alignItems: "flex-end", flexWrap: "wrap" }}>
+                {gs.cards.map((card, i) => {
+                  const m        = CARD_META[card];
+                  const isNew    = i === gs.cards.length - 1;
+                  const isSel    = selectedCards.includes(i);
+                  const maxed    = selectedCards.length >= 3 && !isSel;
+                  const isLoseAllCard = loseAllFlash && isNew;
+                  const cardOpacity  = loseAllFlash ? (isLoseAllCard ? (blinkVisible ? 1 : 0.1) : 0.18) : (maxed ? 0.45 : 1);
+                  const cardBorder   = loseAllFlash
+                    ? (isLoseAllCard ? `2px solid ${blinkVisible ? "#f44336" : "#3a0a0a"}` : "2px solid #1a1a1a")
+                    : `2px solid ${isSel ? "#ffffff" : isNew ? "#ffd700" : m.color}`;
+                  const cardShadow   = loseAllFlash
+                    ? (isLoseAllCard && blinkVisible ? "0 0 18px #f4433688" : "none")
+                    : (isSel ? "0 0 12px #ffffff55" : isNew ? "0 0 14px #ffd70066" : "0 3px 8px rgba(0,0,0,0.6)");
+                  return (
+                    <div key={i}
+                      onClick={() => {
+                        if (loseAllFlash || maxed) return;
+                        setSelectedCards(prev =>
+                          prev.includes(i) ? prev.filter(x => x !== i) : [...prev, i]
+                        );
+                      }}
+                      style={{
+                        width: 76, height: 108,
+                        background: m.bg,
+                        border: cardBorder,
+                        borderRadius: 7,
+                        display: "flex", flexDirection: "column",
+                        alignItems: "center", justifyContent: "center",
+                        gap: 4, padding: "6px 4px",
+                        boxShadow: cardShadow,
+                        fontFamily: "monospace", position: "relative",
+                        cursor: loseAllFlash || maxed ? "default" : "pointer",
+                        opacity: cardOpacity,
+                        transition: "opacity 0.08s",
+                      }}>
+                      {/* NEW badge */}
+                      {isNew && !isSel && !loseAllFlash && (
+                        <div style={{
+                          position: "absolute", top: -10, left: "50%", transform: "translateX(-50%)",
+                          background: "#ffd700", color: "#000", fontSize: 9, fontWeight: 700,
+                          padding: "2px 6px", borderRadius: 3, whiteSpace: "nowrap",
+                        }}>NUEVA</div>
+                      )}
+                      {/* CHECK badge */}
+                      {isSel && !loseAllFlash && (
+                        <div style={{
+                          position: "absolute", top: -10, left: "50%", transform: "translateX(-50%)",
+                          background: "#fff", color: "#000", fontSize: 11, fontWeight: 900,
+                          padding: "2px 6px", borderRadius: 3, lineHeight: 1,
+                        }}>✓</div>
+                      )}
+                      <span style={{ fontSize: 42, color: loseAllFlash && !isLoseAllCard ? "#333" : m.color, lineHeight: 1 }}>{m.symbol}</span>
+                      <span style={{ fontSize: 17, color: loseAllFlash && !isLoseAllCard ? "#333" : m.color, fontWeight: 700, lineHeight: 1 }}>{m.label}</span>
+                      <span style={{ fontSize: 13, color: loseAllFlash && !isLoseAllCard ? "#333" : m.color, opacity: 0.75, lineHeight: 1 }}>{m.sub}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* Trade result row — hidden during lose_all flash */}
+              {!loseAllFlash && selectedCards.length === 3 && (
+                <div style={{ marginTop: 10, borderTop: "1px solid #21262d", paddingTop: 8, display: "flex", alignItems: "center", gap: 10 }}>
+                  {selectionEffect ? (() => {
+                    const bonus   = troopBonus(selectionEffect);
+                    const em      = CARD_META[selectionEffect];
+                    const enabled = bonus > 0 || selectionEffect === "bomba";
+                    const label   = bonus > 0
+                      ? `+${bonus} tropas al refuerzo`
+                      : selectionEffect === "bomba"
+                        ? `${em.symbol} ATAQUE BOMBA — elegí objetivo`
+                        : `${em.label} — próximamente`;
+                    return (
+                      <>
+                        <span style={{ color: em.color, fontFamily: "monospace", fontSize: 13 }}>
+                          {label}
+                        </span>
+                        <button
+                          disabled={!enabled}
+                          onClick={() => handleTrade(selectedCards, selectionEffect)}
+                          style={{
+                            background: enabled ? em.color : "#1a1a1a",
+                            color: enabled ? "#000" : "#444",
+                            border: "none", borderRadius: 4,
+                            padding: "5px 14px", fontFamily: "monospace",
+                            fontWeight: 700, fontSize: 13,
+                            cursor: enabled ? "pointer" : "not-allowed",
+                          }}
+                        >CANJEAR</button>
+                      </>
+                    );
+                  })() : (
+                    <span style={{ color: "#c62828", fontFamily: "monospace", fontSize: 13 }}>
+                      Combinación inválida
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setSelectedCards([])}
+                    style={{
+                      background: "none", color: "#546e7a", border: "1px solid #30363d",
+                      borderRadius: 4, padding: "4px 10px", fontFamily: "monospace",
+                      fontSize: 11, cursor: "pointer", marginLeft: "auto",
+                    }}
+                  >limpiar</button>
+                </div>
+              )}
+            </>
+          ) : gs?.combatMsg ? (
             <div style={{ color: "#ffd700", fontFamily: "monospace", fontSize: 16, fontWeight: 700, marginBottom: 6 }}>
               {gs.combatMsg}
             </div>
@@ -1165,7 +2191,7 @@ export default function MeshWarsView() {
               {gs.log[0]}
             </div>
           ) : null}
-          {gs?.phase === "attack_confirm" && gs.attackSource && gs.attackTarget && (
+          {!cardFlash && gs?.phase === "attack_confirm" && gs.attackSource && gs.attackTarget && (
             <div style={{ color: "#90a4ae", fontFamily: "monospace", fontSize: 15, marginTop: 4 }}>
               {gs.cells[gs.attackSource].troops} CONTRA {gs.cells[gs.attackTarget].troops}
             </div>
