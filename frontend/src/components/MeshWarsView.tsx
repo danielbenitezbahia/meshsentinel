@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { latLngToCell, gridDisk, cellToBoundary, cellToLatLng } from "h3-js";
+import { cellNeighbors, nnSort } from "../ai/utils";
+import { pickReinforcementPool, pickAttack as pickFactionAttack } from "../ai/index";
 import { fetchGraph } from "../api";
 import type { MeshNode } from "../types";
 
@@ -334,11 +336,6 @@ function buildSemanticBridges(cells: Record<string, GameCell>, mst: Bridge[]): B
 
 // ── game helpers ──────────────────────────────────────────────────────────────
 
-function cellNeighbors(h3: string, cells: Record<string, GameCell>, bridges: Bridge[]): string[] {
-  const h3nb = gridDisk(h3, 1).filter(id => id !== h3 && id in cells);
-  const brnb = bridges.filter(b => b.fromH3 === h3 || b.toH3 === h3).map(b => b.fromH3 === h3 ? b.toH3 : b.fromH3);
-  return [...new Set([...h3nb, ...brnb])];
-}
 
 function countControlledIslands(islands: string[][], cells: Record<string, GameCell>, faction: Faction): number {
   return islands.filter(isl => isl.every(id => cells[id]?.owner === faction)).length;
@@ -363,27 +360,6 @@ function checkWinner(cells: Record<string, GameCell>): Faction | null {
 /** Pre-computes every round without applying to state. Returns the full sequence of troop counts. */
 
 
-function geoDistSq(a: string, b: string): number {
-  const [la, lo] = cellToLatLng(a);
-  const [lb, ll] = cellToLatLng(b);
-  return (la - lb) ** 2 + (lo - ll) ** 2;
-}
-
-function nnSort(ids: string[]): string[] {
-  if (ids.length <= 1) return [...ids];
-  const rem = [...ids];
-  const out: string[] = [rem.splice(0, 1)[0]];
-  while (rem.length > 0) {
-    const last = out[out.length - 1];
-    let bi = 0, bd = Infinity;
-    for (let i = 0; i < rem.length; i++) {
-      const d = geoDistSq(last, rem[i]);
-      if (d < bd) { bd = d; bi = i; }
-    }
-    out.push(rem.splice(bi, 1)[0]);
-  }
-  return out;
-}
 
 // ── AI event queue ────────────────────────────────────────────────────────────
 
@@ -460,16 +436,16 @@ function planAITurns(
 
     // Reinforcements (base + troop trade bonus)
     const owned  = Object.values(c).filter(x => x.owner === faction);
-    const border = owned.filter(x => cellNeighbors(x.h3Index, c, bridges).some(id => c[id].owner !== faction));
-    const pool   = border.length > 0 ? border : owned;
     const tradeBonus = events
       .filter(e => e.type === "ai_card_trade" && (e as any).faction === faction)
       .reduce((sum, e) => sum + (e as any).bonus, 0);
     let reinf = calcReinf(c, islands, faction) + tradeBonus;
+    const stratPool   = pickReinforcementPool(faction, owned, c, bridges, islands);
+    const actualPool  = stratPool.length > 0 ? stratPool : owned.map(x => x.h3Index);
     const allocations = new Map<string, number>();
     let remaining = reinf;
-    while (remaining-- > 0 && pool.length > 0) {
-      const id = pool[Math.floor(Math.random() * pool.length)].h3Index;
+    while (remaining-- > 0 && actualPool.length > 0) {
+      const id = actualPool[Math.floor(Math.random() * actualPool.length)];
       allocations.set(id, (allocations.get(id) ?? 0) + 1);
     }
     let focusCell: string | null = null;
@@ -482,28 +458,13 @@ function planAITurns(
       focusCell = cellId;
     }
 
-    // Attacks (up to 3) — prefer candidates near last focus cell
+    // Attacks (up to 3) — delegated to faction strategy
     for (let i = 0; i < 3; i++) {
-      const opts = Object.values(c)
-        .filter(x => x.owner === faction && x.troops >= 2)
-        .flatMap(x => cellNeighbors(x.h3Index, c, bridges)
-          .filter(id => c[id].owner !== faction)
-          .map(id => ({ from: x.h3Index, to: id, adv: x.troops - c[id].troops })))
-        .filter(o => o.adv >= 0)
-        .sort((a, b) => {
-          if (focusCell) {
-            const da = geoDistSq(a.from, focusCell);
-            const db = geoDistSq(b.from, focusCell);
-            // proximity bonus: closer cell gets up to 2 adv points of credit
-            const sa = a.adv - da * 800;
-            const sb = b.adv - db * 800;
-            return sb - sa;
-          }
-          return b.adv - a.adv;
-        });
-      if (!opts.length) break;
+      const factionOwned = Object.values(c).filter(x => x.owner === faction);
+      const attack = pickFactionAttack(faction, factionOwned, c, bridges, focusCell, islands);
+      if (!attack) break;
 
-      const { from, to } = opts[0];
+      const { from, to } = attack;
       focusCell = from;
       events.push({ type: "attack_announce", fromId: from, toId: to });
 
