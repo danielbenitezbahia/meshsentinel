@@ -4,6 +4,8 @@ import "leaflet/dist/leaflet.css";
 import { latLngToCell, gridDisk, cellToBoundary, cellToLatLng } from "h3-js";
 import { cellNeighbors, nnSort } from "../ai/utils";
 import { pickReinforcementPool, pickAttack as pickFactionAttack } from "../ai/index";
+import { generateEvent } from "../ai/events";
+import type { GameEvent } from "../ai/events";
 import { fetchGraph } from "../api";
 import type { MeshNode } from "../types";
 
@@ -374,9 +376,11 @@ function planAITurns(
 ): {
   events: AIEvent[]; finalCells: Record<string, GameCell>; winner: Faction | null; reinf: number;
   newAiHands: Record<string, CardType[]>; newAiWonLastTurn: Record<string, boolean>; newPlayerCards: CardType[];
+  factionCells: Record<string, Record<string, GameCell>>;
 } {
   const events: AIEvent[] = [];
   let c = { ...cells };
+  const factionCells: Record<string, Record<string, GameCell>> = {};
   const localHands: Record<string, CardType[]> = {
     ai1: [...(aiHands.ai1 ?? [])], ai2: [...(aiHands.ai2 ?? [])], ai3: [...(aiHands.ai3 ?? [])],
   };
@@ -483,6 +487,7 @@ function planAITurns(
         : { ...c, [from]: { ...c[from], troops: atk } };
       events.push({ type: "attack_result", fromId: from, toId: to, won, fromTroops: c[from].troops, toTroops: c[to].troops, newOwner: won ? faction : null });
     }
+    factionCells[faction] = { ...c };
   }
 
   if (newTurn % PROD_INTERVAL === 0) {
@@ -503,7 +508,7 @@ function planAITurns(
   const reinf      = calcReinf(finalCells, islands, "player");
   events.push({ type: "done" });
 
-  return { events, finalCells, winner, reinf, newAiHands: localHands, newAiWonLastTurn: wonThisPhase, newPlayerCards: localPlayerCards };
+  return { events, finalCells, winner, reinf, newAiHands: localHands, newAiWonLastTurn: wonThisPhase, newPlayerCards: localPlayerCards, factionCells };
 }
 
 // ── sound ─────────────────────────────────────────────────────────────────────
@@ -646,6 +651,28 @@ function startIntroMusic(): () => void {
   } catch {
     return () => {};
   }
+}
+
+// Returns the point where the line from `from` to `to` exits the hexagon boundary of `from`
+function hexEdgePoint(
+  from: [number, number],
+  to:   [number, number],
+  boundary: [number, number][],
+): [number, number] {
+  const [x0, y0] = from;
+  const [x1, y1] = to;
+  const dx = x1 - x0, dy = y1 - y0;
+  for (let i = 0; i < boundary.length; i++) {
+    const [ax, ay] = boundary[i];
+    const [bx, by] = boundary[(i + 1) % boundary.length];
+    const dax = bx - ax, day = by - ay;
+    const denom = dx * day - dy * dax;
+    if (Math.abs(denom) < 1e-12) continue;
+    const t = ((ax - x0) * day - (ay - y0) * dax) / denom;
+    const s = ((ax - x0) * dy  - (ay - y0) * dx)  / denom;
+    if (t > 0 && s >= 0 && s <= 1) return [x0 + t * dx, y0 + t * dy];
+  }
+  return from;
 }
 
 function troopMarkerHtml(troops: number, isProduction: boolean): string {
@@ -880,6 +907,8 @@ export default function MeshWarsView() {
   const [introCursor, setIntroCursor] = useState(true);
   const introStopRef = useRef<(() => void) | null>(null);
   const introTextRef = useRef<HTMLDivElement>(null);
+  const [logLines, setLogLines]     = useState<string[]>([]);
+  const logEndRef                   = useRef<HTMLDivElement>(null);
   const nodesRef               = useRef<MeshNode[]>([]);
   const mapRef                 = useRef<L.Map | null>(null);
   const containerRef           = useRef<HTMLDivElement>(null);
@@ -890,9 +919,11 @@ export default function MeshWarsView() {
   const gsRef                  = useRef<GameState | null>(null);
   const fittedRef              = useRef(false);
   const aiTimerRef             = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const aiFinalRef             = useRef<{ cells: Record<string, GameCell>; turn: number; reinf: number; winner: Faction | null; aiHands: Record<string, CardType[]>; aiWonLastTurn: Record<string, boolean>; playerCards: CardType[] } | null>(null);
+  const aiFinalRef             = useRef<{ cells: Record<string, GameCell>; turn: number; reinf: number; winner: Faction | null; aiHands: Record<string, CardType[]>; aiWonLastTurn: Record<string, boolean>; playerCards: CardType[]; factionCells: Record<string, Record<string, GameCell>> } | null>(null);
   const lastCensusTurnRef      = useRef(-1);
   const loseAllTimerRef        = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingEventRef        = useRef<GameEvent | null>(null);
+  const [eventBanner, setEventBanner] = useState<GameEvent | null>(null);
   const pendingRechargeRef     = useRef<string | null>(null);
   const prevCardsRef           = useRef(0);
   gsRef.current = gs;
@@ -942,6 +973,9 @@ export default function MeshWarsView() {
         mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.45 });
       }
     }
+    if (event.type === "done" && aiFinalRef.current)
+      pendingEventRef.current = generateEvent(aiFinalRef.current.cells, aiFinalRef.current.turn);
+
     if (event.type === "production_announce") {
       SFX.productionAnnounce();
     }
@@ -975,6 +1009,9 @@ export default function MeshWarsView() {
     else if (event.type === "production_double")    delay = 1500;
 
     aiTimerRef.current = setTimeout(() => {
+      const capturedEvent = event.type === "done" ? pendingEventRef.current : null;
+      if (event.type === "done") pendingEventRef.current = null;
+
       setGs(prev => {
         if (!prev || prev.phase !== "ai_turn" || !prev.aiQueue.length) return prev;
         const [evt, ...rest] = prev.aiQueue;
@@ -1051,7 +1088,12 @@ export default function MeshWarsView() {
 
           case "done": {
             const f = aiFinalRef.current!;
-            let newCards = f.playerCards;  // base = player cards after AI bombs / antibomba consumed
+            let finalCells = f.cells;
+            if (capturedEvent?.targetCell && finalCells[capturedEvent.targetCell]) {
+              const tc = finalCells[capturedEvent.targetCell];
+              finalCells = { ...finalCells, [capturedEvent.targetCell]: { ...tc, troops: Math.max(1, tc.troops + capturedEvent.troopsDelta) } };
+            }
+            let newCards = f.playerCards;
             let newPending = prev.pendingCard;
             if (prev.wonCellThisTurn) {
               const drawn = drawCard(newCards);
@@ -1059,7 +1101,7 @@ export default function MeshWarsView() {
               else if (!prev.pendingCard)  newPending = drawn;
             }
             return {
-              ...base, cells: f.cells, phase: f.winner ? "game_over" : "reinforcement",
+              ...base, cells: finalCells, phase: f.winner ? "game_over" : "reinforcement",
               turn: f.turn, reinforcementsLeft: f.reinf, winner: f.winner,
               currentFaction: f.winner ?? "player",
               aiQueue: [], aiMsg: "", attackSource: null, attackTarget: null,
@@ -1073,6 +1115,30 @@ export default function MeshWarsView() {
           default: return base;
         }
       });
+
+      if (capturedEvent) {
+        setEventBanner(capturedEvent);
+        if (capturedEvent.targetCell && mapRef.current) {
+          const [lat, lon] = cellToLatLng(capturedEvent.targetCell);
+          mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.5 });
+        }
+        if (capturedEvent.type === "POSITIVE") {
+          playTone(523, 0.1, "sine", 0.10);
+          setTimeout(() => playTone(659, 0.12, "sine", 0.12), 110);
+          setTimeout(() => playTone(784, 0.14, "square", 0.10), 240);
+        } else if (capturedEvent.type === "NEGATIVE") {
+          playTone(300, 0.2, "sawtooth", 0.15);
+          setTimeout(() => playTone(240, 0.2, "sawtooth", 0.13), 160);
+          setTimeout(() => playTone(180, 0.25, "sawtooth", 0.11), 340);
+        } else {
+          playTone(440, 0.15, "sine", 0.08);
+        }
+        setTimeout(() => {
+          if (!capturedEvent.targetCell) return;
+          if (capturedEvent.type === "POSITIVE") runRechargeFlash(capturedEvent.targetCell, polygonsRef.current);
+          else runBombFlash(capturedEvent.targetCell, polygonsRef.current);
+        }, 600);
+      }
     }, delay);
 
     return () => { if (aiTimerRef.current) clearTimeout(aiTimerRef.current); };
@@ -1080,32 +1146,82 @@ export default function MeshWarsView() {
 
   useEffect(() => { if (!cardFlash) setSelectedCards([]); }, [cardFlash]);
 
-  // Show card panel when cards increase; detect lose_all
+  function triggerLoseAll() {
+    setLoseAllFlash(true);
+    setCardFlash(true);
+    [350, 270, 200, 150].forEach((f, i) => setTimeout(() => playTone(f, 0.4, "sawtooth", 0.2), i * 200));
+    setGs(prev => prev ? { ...prev, pendingCard: null, combatMsg: "☠ ¡PERDISTE TODAS TUS CARTAS!" } : prev);
+    if (loseAllTimerRef.current) clearTimeout(loseAllTimerRef.current);
+    loseAllTimerRef.current = setTimeout(() => {
+      setGs(prev => prev ? { ...prev, cards: [], combatMsg: "" } : prev);
+      prevCardsRef.current = 0;
+      setLoseAllFlash(false);
+      setCardFlash(false);
+      setSelectedCards([]);
+    }, 3000);
+  }
+
+  // Show card panel when cards increase; detect lose_all in hand
   useEffect(() => {
     const cur = gs?.cards.length ?? 0;
     if (cur > prevCardsRef.current) {
       setCardFlash(true);
-      const newestCard = gsRef.current?.cards[cur - 1];
-      if (newestCard === "lose_all") {
-        setLoseAllFlash(true);
-        [350, 270, 200, 150].forEach((f, i) => setTimeout(() => playTone(f, 0.4, "sawtooth", 0.2), i * 200));
-        if (loseAllTimerRef.current) clearTimeout(loseAllTimerRef.current);
-        loseAllTimerRef.current = setTimeout(() => {
-          setGs(prev => prev ? { ...prev, cards: [] } : prev);
-          prevCardsRef.current = 0;
-          setLoseAllFlash(false);
-          setCardFlash(false);
-          setSelectedCards([]);
-        }, 3000);
-      }
+      const newestCard = gs?.cards[cur - 1];
+      if (newestCard === "lose_all") triggerLoseAll();
     }
-    prevCardsRef.current = cur; // always sync so future draws are detected correctly
+    prevCardsRef.current = cur;
   }, [gs?.cards.length]);
 
-  // Show card panel when pending card arrives (hand was full)
+  // Pending card arrived (hand was full) — if it's lose_all, auto-trigger immediately
   useEffect(() => {
-    if (gs?.pendingCard) setCardFlash(true);
+    if (!gs?.pendingCard) return;
+    if (gs.pendingCard === "lose_all") {
+      triggerLoseAll();
+      return;
+    }
+    setCardFlash(true);
   }, [gs?.pendingCard]);
+
+  // Accumulate log messages from combatMsg and significant aiMsg changes
+  useEffect(() => {
+    const msg = gs?.combatMsg;
+    if (!msg) return;
+    // Filter noisy intermediates
+    if (msg.startsWith("Ataque:") && msg.includes("Defensa:")) return;
+    setLogLines(prev => {
+      if (prev[prev.length - 1] === msg) return prev;
+      const next = [...prev, msg];
+      return next.length > 300 ? next.slice(-300) : next;
+    });
+  }, [gs?.combatMsg]);
+
+  useEffect(() => {
+    const msg = gs?.aiMsg;
+    if (!msg) return;
+    // Only log significant AI messages (not per-reinforce noise)
+    if (msg.includes(": refuerza ")) return;
+    if (msg.includes(" territorios")) return;
+    setLogLines(prev => {
+      if (prev[prev.length - 1] === msg) return prev;
+      const next = [...prev, msg];
+      return next.length > 300 ? next.slice(-300) : next;
+    });
+  }, [gs?.aiMsg]);
+
+  // Add turn separator when turn advances
+  useEffect(() => {
+    if (!gs?.turn) return;
+    setLogLines(prev => {
+      const sep = `── TURNO ${gs.turn} ──`;
+      if (prev[prev.length - 1] === sep) return prev;
+      return [...prev, sep];
+    });
+  }, [gs?.turn]);
+
+  // Auto-scroll log to bottom on new entries
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logLines]);
 
   // Blink toggle for lose_all animation
   useEffect(() => {
@@ -1217,12 +1333,11 @@ export default function MeshWarsView() {
       const isVS     = validSources.has(cell.h3Index);
       const isVBT    = validBombTargets.has(cell.h3Index);
 
-      const fillOp   = isAtk ? 0.85 : isSrc ? 0.85 : isVT ? 0.6 : isVS ? 0.65 : isVBT ? 0.65 : cell.isSynthetic ? 0.28 : 0.45;
-      const border   = isAtk ? "#ffeb3b" : isSrc ? "#ffffff" : isVT ? "#ffeb3b" : isVS ? "#ffffff" : isVBT ? "#ff7043" : color;
-      const bWeight  = isAtk || isSrc || isVT || isVS || isVBT ? 2.5 : cell.isSynthetic ? 1 : 1.5;
-      const dashArr  = cell.isSynthetic ? "4 3" : undefined;
+      const fillOp   = isAtk ? 1.0 : isSrc ? 1.0 : isVT ? 0.95 : isVS ? 0.95 : isVBT ? 0.95 : 0.95;
+      const border   = isAtk ? "#ffeb3b" : isSrc ? "#ffffff" : isVT ? "#ffeb3b" : isVS ? "#ffffff" : isVBT ? "#ff7043" : cell.isProduction ? "#ffffff" : color;
+      const bWeight  = isAtk || isSrc || isVT || isVS || isVBT ? 2.5 : cell.isProduction ? 2 : 1.5;
 
-      const poly = L.polygon(bnd, { fillColor: color, fillOpacity: fillOp, color: border, weight: bWeight, dashArray: dashArr });
+      const poly = L.polygon(bnd, { fillColor: color, fillOpacity: fillOp, color: border, weight: bWeight });
 
       poly.bindTooltip(
         `<b style="color:${color}">${NAMES[cell.owner]}</b> · ${cell.troops} tropas<br>` +
@@ -1335,7 +1450,7 @@ export default function MeshWarsView() {
         const [cLat, cLon] = cellToLatLng(cell.h3Index);
         for (const ratio of [0.75, 0.5, 0.25]) {
           const ring = bnd.map(([la, lo]) => [cLat + (la - cLat) * ratio, cLon + (lo - cLon) * ratio] as [number, number]);
-          const rPoly = L.polygon(ring, { fillOpacity: 0, color, weight: 1, interactive: false });
+          const rPoly = L.polygon(ring, { fillOpacity: 0, color: "#ffffff", weight: 1.5, opacity: 0.7, interactive: false });
           rPoly.addTo(map);
           infraRingsRef.current.push(rPoly);
         }
@@ -1353,12 +1468,17 @@ export default function MeshWarsView() {
 
     // Bridges
     for (const bridge of gs.bridges) {
-      const [la, lo] = cellToLatLng(bridge.fromH3), [lb, ll] = cellToLatLng(bridge.toH3);
+      const centerA = cellToLatLng(bridge.fromH3) as [number, number];
+      const centerB = cellToLatLng(bridge.toH3)   as [number, number];
+      const boundA  = cellToBoundary(bridge.fromH3) as [number, number][];
+      const boundB  = cellToBoundary(bridge.toH3)   as [number, number][];
+      const ptA = hexEdgePoint(centerA, centerB, boundA);
+      const ptB = hexEdgePoint(centerB, centerA, boundB);
       const isAttackBridge = (gs.attackSource === bridge.fromH3 && gs.attackTarget === bridge.toH3)
                           || (gs.attackSource === bridge.toH3   && gs.attackTarget === bridge.fromH3);
       const isMoveBridge   = gs.moveSource === bridge.fromH3 || gs.moveSource === bridge.toH3;
       const lit = isAttackBridge || isMoveBridge;
-      const line = L.polyline([[la, lo], [lb, ll]], {
+      const line = L.polyline([ptA, ptB], {
         color: lit ? "#ffeb3b" : "#000", weight: lit ? 6 : 4, opacity: lit ? 1 : 0.85,
       });
       line.addTo(map);
@@ -1485,9 +1605,9 @@ export default function MeshWarsView() {
         };
         SFX.move();
         const newTurn = prev.turn + 1;
-        const { events, finalCells, winner, reinf, newAiHands, newAiWonLastTurn, newPlayerCards } =
+        const { events, finalCells, winner, reinf, newAiHands, newAiWonLastTurn, newPlayerCards, factionCells: fc1 } =
           planAITurns(newCells, prev.bridges, prev.islands, newTurn, prev.aiHands, prev.aiWonLastTurn, prev.cards);
-        aiFinalRef.current = { cells: finalCells, turn: newTurn, reinf, winner, aiHands: newAiHands, aiWonLastTurn: newAiWonLastTurn, playerCards: newPlayerCards };
+        aiFinalRef.current = { cells: finalCells, turn: newTurn, reinf, winner, aiHands: newAiHands, aiWonLastTurn: newAiWonLastTurn, playerCards: newPlayerCards, factionCells: fc1 };
         return {
           ...prev, cells: newCells,
           phase: "ai_turn", aiQueue: events, aiMsg: "",
@@ -1525,8 +1645,8 @@ export default function MeshWarsView() {
       if (action === "pass" && (prev.phase === "action" || prev.phase === "reinforcement")) {
         SFX.pass();
         const newTurn = prev.turn + 1;
-        const { events, finalCells, winner, reinf, newAiHands, newAiWonLastTurn, newPlayerCards } = planAITurns(prev.cells, prev.bridges, prev.islands, newTurn, prev.aiHands, prev.aiWonLastTurn, prev.cards);
-        aiFinalRef.current = { cells: finalCells, turn: newTurn, reinf, winner, aiHands: newAiHands, aiWonLastTurn: newAiWonLastTurn, playerCards: newPlayerCards };
+        const { events, finalCells, winner, reinf, newAiHands, newAiWonLastTurn, newPlayerCards, factionCells: fc2 } = planAITurns(prev.cells, prev.bridges, prev.islands, newTurn, prev.aiHands, prev.aiWonLastTurn, prev.cards);
+        aiFinalRef.current = { cells: finalCells, turn: newTurn, reinf, winner, aiHands: newAiHands, aiWonLastTurn: newAiWonLastTurn, playerCards: newPlayerCards, factionCells: fc2 };
         return {
           ...prev,
           phase: "ai_turn",
@@ -1540,6 +1660,30 @@ export default function MeshWarsView() {
         if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
         const f = aiFinalRef.current;
         if (!f) return prev;
+
+        // Find next faction boundary in remaining queue
+        const queue = prev.aiQueue;
+        const atStart = queue[0]?.type === "faction_start";
+        // If we're at a faction_start, skip this whole faction → find the NEXT faction_start
+        // If we're mid-faction, find the NEXT faction_start
+        const searchFrom = atStart ? 1 : 0;
+        const nextFSIdx = queue.findIndex((e, i) => i >= searchFrom && e.type === "faction_start");
+
+        if (nextFSIdx >= 0) {
+          // Jump to next faction: restore cells from the faction that just finished
+          const nextFaction = (queue[nextFSIdx] as Extract<AIEvent, { type: "faction_start" }>).faction;
+          const AI_ORDER: Faction[] = ["ai1", "ai2", "ai3"];
+          const nextIdx = AI_ORDER.indexOf(nextFaction);
+          const snapCells = nextIdx > 0 ? f.factionCells[AI_ORDER[nextIdx - 1]] : prev.cells;
+          return {
+            ...prev,
+            cells: snapCells,
+            aiQueue: queue.slice(nextFSIdx),
+            attackSource: null, attackTarget: null,
+          };
+        }
+
+        // No more factions — jump straight to final state
         let newCards = f.playerCards;
         let newPending = prev.pendingCard;
         if (prev.wonCellThisTurn) {
@@ -1635,7 +1779,7 @@ export default function MeshWarsView() {
       }))
     : [];
 
-  const [statusLine1, statusLine2] = gs ? statusText(gs) : ["", ""];
+  const [statusLine1] = gs ? statusText(gs) : ["", ""];
 
   const btnStyle = (color: string, disabled = false): React.CSSProperties => ({
     background: disabled ? "#2a2a2a" : color,
@@ -1655,10 +1799,10 @@ export default function MeshWarsView() {
   const canCancel      = gs ? !["action", "reinforcement", "post_conquest", "ai_turn", "game_over"].includes(gs.phase) : false;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1a2332" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 36px)", background: "#1a2332" }}>
 
-      {/* Map area — 80% */}
-      <div style={{ flex: 4, position: "relative", minHeight: 0 }}>
+      {/* Map area */}
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
 
         {/* Score panel — top left overlay */}
@@ -1788,6 +1932,45 @@ export default function MeshWarsView() {
           </div>
         )}
 
+        {/* Random event banner */}
+        {eventBanner && gs && (() => {
+          const fColor = COLORS[eventBanner.targetFaction];
+          const tColor = eventBanner.type === "POSITIVE" ? "#4caf50" : eventBanner.type === "NEGATIVE" ? "#f44336" : "#78909c";
+          const tIcon  = eventBanner.type === "POSITIVE" ? "▲" : eventBanner.type === "NEGATIVE" ? "▼" : "◆";
+          return (
+            <>
+              <div style={{ position: "absolute", inset: 0, zIndex: 1500, background: "rgba(0,0,0,0.35)" }} />
+              <div style={{
+                position: "absolute", top: "18%", left: "50%", transform: "translateX(-50%)",
+                zIndex: 1600, background: "#0d1117", border: `2px solid ${fColor}`,
+                borderRadius: 14, padding: "22px 28px", minWidth: 360, maxWidth: 480,
+                boxShadow: `0 0 40px ${fColor}55`, fontFamily: "monospace",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                  <span style={{ fontSize: 22, color: tColor, lineHeight: 1 }}>{tIcon}</span>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", letterSpacing: 1 }}>
+                      {eventBanner.title.toUpperCase()}
+                    </div>
+                    <div style={{ fontSize: 10, color: fColor, marginTop: 3, letterSpacing: 1 }}>
+                      {NAMES[eventBanner.targetFaction]} · {eventBanner.severity}
+                    </div>
+                  </div>
+                </div>
+                <p style={{ color: "#90a4ae", fontSize: 13, lineHeight: 1.75, margin: "0 0 18px" }}>
+                  {eventBanner.description}
+                </p>
+                <button
+                  onClick={() => setEventBanner(null)}
+                  style={{ ...btnStyle(fColor), width: "100%", fontSize: 13, padding: "10px" }}
+                >
+                  ENTENDIDO
+                </button>
+              </div>
+            </>
+          );
+        })()}
+
         {/* Start screen */}
         {!gs && introState === "start" && (
           <div style={{
@@ -1862,27 +2045,50 @@ export default function MeshWarsView() {
         )}
       </div>
 
-      {/* Bottom bar — 20% */}
+      {/* Bottom bar — fixed 160px */}
       <div style={{
-        flex: 1, display: "flex", background: "#0d1117",
-        borderTop: "2px solid #30363d", minHeight: 0,
+        height: 160, flexShrink: 0, display: "flex", background: "#0d1117",
+        borderTop: "2px solid #30363d",
       }}>
-        {/* Left: status */}
+        {/* Left: scrollable log */}
         <div style={{
-          flex: 1, padding: "12px 20px", display: "flex", flexDirection: "column",
-          justifyContent: "center", borderRight: "1px solid #30363d",
+          width: "33%", height: "100%", borderRight: "1px solid #30363d",
+          display: "flex", flexDirection: "column", padding: "6px 0 6px 12px",
+          boxSizing: "border-box",
         }}>
           {gs ? (
             <>
-              <div style={{ color: "#f0f6fc", fontFamily: "monospace", fontSize: 16, fontWeight: 700, marginBottom: 6 }}>
+              <div style={{ color: "#f0f6fc", fontFamily: "monospace", fontSize: 13, fontWeight: 700, marginBottom: 4, flexShrink: 0, paddingRight: 12 }}>
                 {statusLine1}
               </div>
-              <div style={{ color: "#8b949e", fontFamily: "monospace", fontSize: 14 }}>
-                {statusLine2}
+              <div style={{
+                height: 0, flex: 1, overflowY: "scroll", overflowX: "hidden",
+                paddingRight: 8,
+              }}>
+                {logLines.map((line, i) => {
+                  const isSep = line.startsWith("──");
+                  return (
+                    <div key={i} style={{
+                      fontFamily: "monospace",
+                      fontSize: isSep ? 10 : 11,
+                      lineHeight: "16px",
+                      color: isSep ? "#30363d" : line.includes("CONQUISTA") || line.includes("victoria") ? "#ffd700"
+                        : line.includes("BOMBA") || line.includes("PERDISTE") ? "#f44336"
+                        : line.includes("jugando") ? "#42a5f5"
+                        : "#8b949e",
+                      letterSpacing: isSep ? 1 : 0,
+                      borderTop: isSep ? "1px solid #21262d" : "none",
+                      paddingTop: isSep ? 3 : 0,
+                      marginTop: isSep ? 2 : 0,
+                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                    }}>{line}</div>
+                  );
+                })}
+                <div ref={logEndRef} />
               </div>
             </>
           ) : (
-            <div style={{ color: "#484f58", fontFamily: "monospace", fontSize: 16 }}>MESH WARS</div>
+            <div style={{ color: "#484f58", fontFamily: "monospace", fontSize: 16, margin: "auto" }}>MESH WARS</div>
           )}
         </div>
 
@@ -1947,7 +2153,10 @@ export default function MeshWarsView() {
               <button style={btnStyle("#c62828", !inAction)} onClick={() => inAction && handleButton("attack")}>ATACAR</button>
               <button style={btnStyle("#006064", !inAction)} onClick={() => inAction && handleButton("move")}>MOVER</button>
               <button style={btnStyle("#2e7d32")} onClick={() => handleButton("pass")}>PASAR</button>
-              <button style={btnStyle("#424242", true)}>CARTA</button>
+              <button
+                style={btnStyle(cardFlash ? "#1565c0" : "#424242", !gs?.cards.length)}
+                onClick={() => { if (gs?.cards.length) setCardFlash(f => !f); }}
+              >CARTAS {gs?.cards.length ? `(${gs.cards.length})` : ""}</button>
               <button style={btnStyle("#f57f17", !canCancel)} onClick={() => canCancel && handleButton("cancel")}>CANCELAR</button>
             </>
           )}
