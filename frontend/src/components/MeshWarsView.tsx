@@ -675,8 +675,12 @@ function hexEdgePoint(
   return from;
 }
 
-function troopMarkerHtml(troops: number, isProduction: boolean): string {
-  return `<div style="background:rgba(0,0,0,0.6);color:#fff;font-size:13px;font-weight:700;font-family:monospace;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,0.55);pointer-events:none;transform:translate(-50%,-50%);">${troops}${isProduction ? '<span style="color:#ffd700;font-size:8px;position:absolute;top:-2px;right:-2px">★</span>' : ""}</div>`;
+const HEX_VISIBLE_ZOOM = 11;
+
+function troopMarkerHtml(troops: number, isProduction: boolean, ownerColor: string, factionBg = false): string {
+  const bg     = factionBg ? ownerColor : "rgba(0,0,0,0.6)";
+  const border = factionBg ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.55)";
+  return `<div style="background:${bg};color:#fff;font-size:13px;font-weight:700;font-family:monospace;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid ${border};pointer-events:none;transform:translate(-50%,-50%);position:relative;">${troops}${isProduction ? '<span style="color:#ffd700;font-size:8px;position:absolute;top:-2px;right:-2px">★</span>' : ""}</div>`;
 }
 
 function runRechargeFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
@@ -909,6 +913,7 @@ export default function MeshWarsView() {
   const introTextRef = useRef<HTMLDivElement>(null);
   const [logLines, setLogLines]     = useState<string[]>([]);
   const logEndRef                   = useRef<HTMLDivElement>(null);
+  const [mapZoom, setMapZoom]       = useState(12);
   const nodesRef               = useRef<MeshNode[]>([]);
   const mapRef                 = useRef<L.Map | null>(null);
   const containerRef           = useRef<HTMLDivElement>(null);
@@ -952,7 +957,7 @@ export default function MeshWarsView() {
         const cell = gsRef.current?.cells[cellId];
         const marker = troopMarkersRef.current.get(cellId);
         if (marker && cell)
-          marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(newTroops, cell.isProduction), iconSize: [0, 0], iconAnchor: [0, 0] }));
+          marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(newTroops, cell.isProduction, COLORS[cell.owner], (mapRef.current?.getZoom() ?? 12) < HEX_VISIBLE_ZOOM), iconSize: [0, 0], iconAnchor: [0, 0] }));
       }, 580); // 450ms flyTo + 130ms pause
     }
     if (event.type === "census_start" && mapRef.current)
@@ -992,7 +997,7 @@ export default function MeshWarsView() {
         const cell = gsRef.current?.cells[pdCellId];
         const marker = troopMarkersRef.current.get(pdCellId);
         if (marker && cell)
-          marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(pdTroops, true), iconSize: [0, 0], iconAnchor: [0, 0] }));
+          marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(pdTroops, true, COLORS[cell.owner], (mapRef.current?.getZoom() ?? 12) < HEX_VISIBLE_ZOOM), iconSize: [0, 0], iconAnchor: [0, 0] }));
       }, 600);
     }
 
@@ -1223,6 +1228,22 @@ export default function MeshWarsView() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logLines]);
 
+  // Re-render troop markers when zoom crosses the hex-visibility threshold
+  useEffect(() => {
+    const gs = gsRef.current;
+    if (!gs) return;
+    const factionBg = mapZoom < HEX_VISIBLE_ZOOM;
+    for (const [cellId, marker] of troopMarkersRef.current) {
+      const cell = gs.cells[cellId];
+      if (!cell) continue;
+      marker.setIcon(L.divIcon({
+        className: "",
+        html: troopMarkerHtml(cell.troops, cell.isProduction, COLORS[cell.owner], factionBg),
+        iconSize: [0, 0], iconAnchor: [0, 0],
+      }));
+    }
+  }, [mapZoom]);
+
   // Blink toggle for lose_all animation
   useEffect(() => {
     if (!loseAllFlash) { setBlinkVisible(true); return; }
@@ -1281,6 +1302,7 @@ export default function MeshWarsView() {
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap", maxZoom: 19,
     }).addTo(mapRef.current);
+    mapRef.current.on("zoomend", () => setMapZoom(mapRef.current!.getZoom()));
     return () => { mapRef.current?.remove(); mapRef.current = null; };
   }, []);
 
@@ -1459,7 +1481,7 @@ export default function MeshWarsView() {
       // Troop count marker
       const [cLat, cLon] = cellToLatLng(cell.h3Index);
       const tm = L.marker([cLat, cLon], {
-        icon: L.divIcon({ className: "", html: troopMarkerHtml(cell.troops, cell.isProduction), iconSize: [0, 0], iconAnchor: [0, 0] }),
+        icon: L.divIcon({ className: "", html: troopMarkerHtml(cell.troops, cell.isProduction, COLORS[cell.owner], mapZoom < HEX_VISIBLE_ZOOM), iconSize: [0, 0], iconAnchor: [0, 0] }),
         interactive: false, zIndexOffset: 500,
       });
       tm.addTo(map);
@@ -1510,7 +1532,7 @@ export default function MeshWarsView() {
 
   // ── actions ──────────────────────────────────────────────────────────────────
 
-  function handleButton(action: "attack" | "attack_confirm" | "troop_plus" | "troop_minus" | "troop_confirm" | "move" | "pass" | "skip_ai" | "cancel") {
+  function handleButton(action: "attack" | "attack_confirm" | "troop_plus" | "troop_minus" | "troop_plus_big" | "troop_minus_big" | "troop_confirm" | "move" | "pass" | "skip_ai" | "cancel") {
     setCardFlash(false);
     // One manual round of combat per click
     if (action === "attack_confirm") {
@@ -1585,14 +1607,19 @@ export default function MeshWarsView() {
     setGs(prev => {
       if (!prev) return prev;
 
-      if (action === "troop_plus" && (prev.phase === "post_conquest" || prev.phase === "move_confirm")) {
-        const max = prev.phase === "move_confirm"
+      if ((action === "troop_plus" || action === "troop_plus_big") && (prev.phase === "post_conquest" || prev.phase === "move_confirm")) {
+        const max  = prev.phase === "move_confirm"
           ? (prev.cells[prev.moveSource!]?.troops ?? 2) - 1
           : (prev.cells[prev.attackSource!]?.troops ?? 2) - 1;
-        return { ...prev, postConquestTroops: Math.min(prev.postConquestTroops + 1, max) };
+        const step = action === "troop_plus_big" ? Math.ceil(max / 3) : 1;
+        return { ...prev, postConquestTroops: Math.min(prev.postConquestTroops + step, max) };
       }
-      if (action === "troop_minus" && (prev.phase === "post_conquest" || prev.phase === "move_confirm")) {
-        return { ...prev, postConquestTroops: Math.max(prev.postConquestTroops - 1, 1) };
+      if ((action === "troop_minus" || action === "troop_minus_big") && (prev.phase === "post_conquest" || prev.phase === "move_confirm")) {
+        const max  = prev.phase === "move_confirm"
+          ? (prev.cells[prev.moveSource!]?.troops ?? 2) - 1
+          : (prev.cells[prev.attackSource!]?.troops ?? 2) - 1;
+        const step = action === "troop_minus_big" ? Math.ceil(max / 3) : 1;
+        return { ...prev, postConquestTroops: Math.max(prev.postConquestTroops - step, 1) };
       }
       if (action === "troop_confirm" && prev.phase === "move_confirm") {
         const from = prev.cells[prev.moveSource!];
@@ -1782,13 +1809,15 @@ export default function MeshWarsView() {
   const [statusLine1] = gs ? statusText(gs) : ["", ""];
 
   const btnStyle = (color: string, disabled = false): React.CSSProperties => ({
-    background: disabled ? "#2a2a2a" : color,
-    color: disabled ? "#555" : "#fff",
-    border: `2px solid ${disabled ? "#333" : color}`,
-    borderRadius: 4, padding: "10px 18px",
-    fontFamily: "monospace", fontWeight: 700, fontSize: 15,
+    background: disabled ? "transparent" : `${color}18`,
+    color: disabled ? "#1e2d3d" : color,
+    border: `1px solid ${disabled ? "#0d1a28" : color}`,
+    borderRadius: 2, padding: "8px 16px",
+    fontFamily: "monospace", fontWeight: 700, fontSize: 13,
     cursor: disabled ? "not-allowed" : "pointer",
-    letterSpacing: 1, minWidth: 80,
+    letterSpacing: 2, minWidth: 80,
+    boxShadow: disabled ? "none" : `0 0 10px ${color}55`,
+    textTransform: "uppercase" as const,
   });
 
   const inAction       = gs?.phase === "action";
@@ -1813,92 +1842,136 @@ export default function MeshWarsView() {
                 0%, 100% { background-color: transparent; }
                 50%       { background-color: var(--pulse-color); }
               }
+              @keyframes mw-scanline {
+                0%   { transform: translateY(-100%); }
+                100% { transform: translateY(400%); }
+              }
+              @keyframes mw-blink {
+                0%, 49% { opacity: 1; }
+                50%, 100% { opacity: 0; }
+              }
+              @keyframes mw-border-pulse {
+                0%, 100% { border-left-color: var(--faction-color); box-shadow: inset 3px 0 8px var(--faction-color-dim); }
+                50%       { border-left-color: #fff; box-shadow: inset 3px 0 16px var(--faction-color); }
+              }
             `}</style>
             <div style={{
               position: "absolute", top: 12, left: 12, zIndex: 1000,
-              background: "rgba(210,216,226,0.97)",
-              backdropFilter: "blur(10px)",
-              WebkitBackdropFilter: "blur(10px)",
-              border: "1px solid rgba(0,0,0,0.12)",
-              borderRadius: 14,
+              background: "rgba(4, 8, 16, 0.92)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
+              border: "1px solid #00e5ff33",
+              borderRadius: 3,
               overflow: "hidden",
-              padding: "10px 14px 10px",
+              padding: "0",
               fontFamily: "monospace",
-              minWidth: 250,
-              boxShadow: "0 4px 20px rgba(0,0,0,0.22)",
+              minWidth: 240,
+              boxShadow: "0 0 24px #00e5ff18, 0 4px 20px rgba(0,0,0,0.6), inset 0 0 40px rgba(0,230,255,0.03)",
             }}>
-              {/* Header */}
+              {/* Gradient top accent */}
+              <div style={{ height: 2, background: "linear-gradient(90deg, #00e5ff, #aa00ff, #ff0099)" }} />
+
+              {/* Scanline overlay */}
               <div style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                marginBottom: 8, paddingBottom: 7,
-                borderBottom: "1px solid rgba(0,0,0,0.08)",
-              }}>
-                <span style={{ color: "#888", fontSize: 10, fontWeight: 800, letterSpacing: 3 }}>
-                  MESH WARS
-                </span>
-                <span style={{ color: "#888", fontSize: 10, fontWeight: 800, letterSpacing: 2 }}>
-                  TURNO {gs.turn}
-                </span>
-              </div>
+                position: "absolute", inset: 0, pointerEvents: "none", zIndex: 1,
+                background: "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.08) 2px, rgba(0,0,0,0.08) 4px)",
+              }} />
 
-              {/* Faction rows */}
-              {scoreRows.map(({ f, territories, islands }) => {
-                const isActive = f === gs.currentFaction && gs.phase !== "game_over";
-                const pct = totalCells > 0 ? (territories / totalCells) * 100 : 0;
-                return (
-                  <div
-                    key={f}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 8,
-                      padding: "6px 8px",
-                      marginBottom: 3,
-                      borderRadius: 8,
-                      borderLeft: `4px solid ${isActive ? COLORS[f] : COLORS[f] + "40"}`,
-                      // CSS var for the keyframe
-                      ["--pulse-color" as any]: `${COLORS[f]}18`,
-                      animation: isActive ? "mw-pulse 1.6s ease-in-out infinite" : "none",
-                      transition: "border-color 0.3s",
-                    }}
-                  >
-                    {/* Name */}
-                    <span style={{
-                      color: isActive ? COLORS[f] : COLORS[f] + "77",
-                      width: 62, fontSize: isActive ? 14 : 12,
-                      fontWeight: 800, letterSpacing: 1,
-                      transition: "all 0.3s",
-                    }}>
-                      {NAMES[f]}
-                    </span>
+              <div style={{ padding: "8px 12px 10px", position: "relative", zIndex: 2 }}>
+                {/* Header */}
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  marginBottom: 8, paddingBottom: 6,
+                  borderBottom: "1px solid #00e5ff18",
+                }}>
+                  <span style={{ color: "#00e5ffbb", fontSize: 10, fontWeight: 800, letterSpacing: 4 }}>
+                    MESH WARS
+                  </span>
+                  <span style={{ color: "#00e5ff", fontSize: 12, fontWeight: 800, letterSpacing: 2, textShadow: "0 0 10px #00e5ff" }}>
+                    TURNO {gs.turn}
+                  </span>
+                </div>
 
-                    {/* Bar + numbers */}
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
-                        <span style={{
-                          color: isActive ? "#111" : "#777",
-                          fontSize: isActive ? 22 : 15,
-                          fontWeight: 800, lineHeight: 1,
-                          transition: "all 0.3s",
-                        }}>
-                          {territories}
-                        </span>
-                        {islands > 0 && (
-                          <span style={{ color: isActive ? "#c8960a" : "#c8960a66", fontSize: 10, fontWeight: 700 }}>
-                            {islands}★
-                          </span>
+                {/* Faction rows */}
+                {scoreRows.map(({ f, territories, islands }) => {
+                  const isActive = f === gs.currentFaction && gs.phase !== "game_over";
+                  const pct = totalCells > 0 ? (territories / totalCells) * 100 : 0;
+                  return (
+                    <div
+                      key={f}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 8,
+                        padding: "5px 6px",
+                        marginBottom: 2,
+                        borderRadius: 2,
+                        borderLeft: `3px solid ${isActive ? COLORS[f] : COLORS[f] + "30"}`,
+                        ["--pulse-color" as any]: `${COLORS[f]}20`,
+                        ["--faction-color" as any]: COLORS[f],
+                        ["--faction-color-dim" as any]: `${COLORS[f]}44`,
+                        animation: isActive ? "mw-border-pulse 0.9s ease-in-out infinite" : "none",
+                        transition: "border-color 0.3s",
+                        background: isActive ? `${COLORS[f]}0f` : "transparent",
+                      }}
+                    >
+                      {/* Name */}
+                      <span style={{
+                        color: isActive ? COLORS[f] : COLORS[f] + "cc",
+                        width: 68, fontSize: isActive ? 15 : 13,
+                        fontWeight: 800, letterSpacing: 2,
+                        textShadow: isActive ? `0 0 12px ${COLORS[f]}, 0 0 4px ${COLORS[f]}` : `0 0 6px ${COLORS[f]}66`,
+                        transition: "all 0.3s",
+                        display: "flex", alignItems: "center", gap: 4,
+                      }}>
+                        {isActive && (
+                          <span style={{
+                            fontSize: 10, lineHeight: 1,
+                            color: COLORS[f],
+                            textShadow: `0 0 8px ${COLORS[f]}`,
+                            animation: "mw-blink 0.7s step-end infinite",
+                            flexShrink: 0,
+                          }}>►</span>
                         )}
-                      </div>
-                      <div style={{ height: isActive ? 4 : 2, background: "rgba(0,0,0,0.07)", borderRadius: 2, overflow: "hidden", transition: "height 0.3s" }}>
-                        <div style={{
-                          height: "100%", width: `${pct}%`,
-                          background: isActive ? COLORS[f] : COLORS[f] + "66",
-                          borderRadius: 2,
-                          transition: "width 0.5s ease",
-                        }} />
+                        {NAMES[f]}
+                      </span>
+
+                      {/* Bar + numbers */}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>
+                          <span style={{
+                            color: isActive ? "#ffffff" : COLORS[f] + "dd",
+                            fontSize: isActive ? 24 : 17,
+                            fontWeight: 800, lineHeight: 1,
+                            textShadow: isActive ? `0 0 14px ${COLORS[f]}, 0 0 6px #fff` : `0 0 8px ${COLORS[f]}88`,
+                            transition: "all 0.3s",
+                          }}>
+                            {territories}
+                          </span>
+                          {islands > 0 && (
+                            <span style={{
+                              color: isActive ? "#ffcc00" : "#ffcc0099",
+                              fontSize: 10, fontWeight: 700,
+                              textShadow: isActive ? "0 0 8px #ffcc00" : "none",
+                            }}>
+                              {islands}★
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ height: isActive ? 3 : 2, background: "#0a1828", borderRadius: 1, overflow: "hidden", transition: "height 0.3s" }}>
+                          <div style={{
+                            height: "100%", width: `${pct}%`,
+                            background: isActive
+                              ? `linear-gradient(90deg, ${COLORS[f]}88, ${COLORS[f]})`
+                              : COLORS[f] + "44",
+                            borderRadius: 1,
+                            transition: "width 0.5s ease",
+                            boxShadow: isActive ? `0 0 6px ${COLORS[f]}` : "none",
+                          }} />
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </>
         )}
@@ -2045,132 +2118,148 @@ export default function MeshWarsView() {
         )}
       </div>
 
-      {/* Bottom bar — fixed 160px */}
+      {/* Bottom bar — cyberpunk */}
       <div style={{
-        height: 160, flexShrink: 0, display: "flex", background: "#0d1117",
-        borderTop: "2px solid #30363d",
+        height: 160, flexShrink: 0, display: "flex", background: "#06090f",
+        position: "relative",
       }}>
+        {/* Gradient top accent */}
+        <div style={{
+          position: "absolute", top: 0, left: 0, right: 0, height: 2, zIndex: 2,
+          background: "linear-gradient(90deg, #00e5ff 0%, #aa00ff 35%, #ff0099 65%, #ffcc00 100%)",
+        }} />
+
         {/* Left: scrollable log */}
         <div style={{
-          width: "33%", height: "100%", borderRight: "1px solid #30363d",
-          display: "flex", flexDirection: "column", padding: "6px 0 6px 12px",
-          boxSizing: "border-box",
+          width: "33%", height: "100%",
+          borderRight: "1px solid #0a1828",
+          display: "flex", flexDirection: "column", padding: "10px 0 6px 12px",
+          boxSizing: "border-box", background: "#060e18",
         }}>
-          {gs ? (
-            <>
-              <div style={{ color: "#f0f6fc", fontFamily: "monospace", fontSize: 13, fontWeight: 700, marginBottom: 4, flexShrink: 0, paddingRight: 12 }}>
-                {statusLine1}
-              </div>
+          {/* Panel label */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexShrink: 0, paddingRight: 10 }}>
+            <span style={{ color: "#00e5ff", fontFamily: "monospace", fontSize: 9, letterSpacing: 3, fontWeight: 700 }}>[ LOG ]</span>
+            <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg, #00e5ff55, transparent)" }} />
+          </div>
+          {/* Current event — large + highlighted */}
+          {gs && (
+            <div style={{
+              flexShrink: 0, marginBottom: 6, paddingRight: 10,
+              textAlign: "center",
+            }}>
               <div style={{
-                height: 0, flex: 1, overflowY: "scroll", overflowX: "hidden",
-                paddingRight: 8,
-              }}>
-                {logLines.map((line, i) => {
-                  const isSep = line.startsWith("──");
-                  return (
-                    <div key={i} style={{
-                      fontFamily: "monospace",
-                      fontSize: isSep ? 10 : 11,
-                      lineHeight: "16px",
-                      color: isSep ? "#30363d" : line.includes("CONQUISTA") || line.includes("victoria") ? "#ffd700"
-                        : line.includes("BOMBA") || line.includes("PERDISTE") ? "#f44336"
-                        : line.includes("jugando") ? "#42a5f5"
-                        : "#8b949e",
-                      letterSpacing: isSep ? 1 : 0,
-                      borderTop: isSep ? "1px solid #21262d" : "none",
-                      paddingTop: isSep ? 3 : 0,
-                      marginTop: isSep ? 2 : 0,
-                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                    }}>{line}</div>
-                  );
-                })}
-                <div ref={logEndRef} />
-              </div>
-            </>
+                fontFamily: "monospace", fontSize: 15, fontWeight: 700,
+                color: "#00e5ff", letterSpacing: 1,
+                textShadow: "0 0 10px #00e5ff88",
+                border: "1px solid #00e5ff33",
+                borderRadius: 2,
+                padding: "4px 8px",
+                background: "#00e5ff0a",
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              }}>{statusLine1 || "MESH WARS"}</div>
+            </div>
+          )}
+          {gs ? (
+            <div style={{ height: 0, flex: 1, overflowY: "scroll", overflowX: "hidden", paddingRight: 6 }}>
+              {logLines.map((line, i) => {
+                const isSep = line.startsWith("──");
+                return (
+                  <div key={i} style={{
+                    fontFamily: "monospace",
+                    fontSize: isSep ? 10 : 13,
+                    lineHeight: "18px",
+                    textAlign: "center",
+                    color: isSep ? "#0d1e2e"
+                      : line.includes("CONQUISTA") ? "#ffcc00"
+                      : line.includes("BOMBA") || line.includes("PERDISTE") ? "#ff0099"
+                      : line.includes("victoria") ? "#00ff88"
+                      : line.includes("jugando") ? "#00e5ff"
+                      : "#4a7a9b",
+                    borderTop: isSep ? "1px solid #0a1828" : "none",
+                    paddingTop: isSep ? 2 : 0, marginTop: isSep ? 2 : 0,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}>{line}</div>
+                );
+              })}
+              <div ref={logEndRef} />
+            </div>
           ) : (
-            <div style={{ color: "#484f58", fontFamily: "monospace", fontSize: 16, margin: "auto" }}>MESH WARS</div>
+            <div style={{ color: "#0d2030", fontFamily: "monospace", fontSize: 13, margin: "auto" }}>MESH WARS</div>
           )}
         </div>
 
         {/* Center: buttons */}
         <div style={{
           flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-          gap: 10, borderRight: "1px solid #30363d", padding: "0 12px",
+          gap: 8, borderRight: "1px solid #0a1828", padding: "0 12px", flexDirection: "column",
         }}>
           {!gs ? null : gs.phase === "game_over" ? (
-            <button style={btnStyle("#1976d2")} onClick={startGame}>NUEVA PARTIDA</button>
+            <button style={btnStyle("#00e5ff")} onClick={startGame}>NUEVA PARTIDA</button>
           ) : inAiTurn ? (
             <button
               onClick={() => handleButton("skip_ai")}
-              style={{ ...btnStyle("#455a64"), fontSize: 16, padding: "12px 32px", letterSpacing: 2 }}
+              style={{ ...btnStyle("#aa00ff"), fontSize: 15, padding: "10px 28px", letterSpacing: 3 }}
             >⏭ SALTAR</button>
           ) : inPostConquest || inMoveConfirm ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <button
-                onClick={() => handleButton("troop_minus")}
-                style={{ ...btnStyle("#455a64"), fontSize: 24, padding: "8px 20px", minWidth: 50 }}
-              >−</button>
-              <span style={{
-                color: "#ffd700", fontFamily: "monospace", fontWeight: 700,
-                fontSize: 32, minWidth: 48, textAlign: "center",
-              }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button onClick={() => handleButton("troop_minus_big")} style={{ ...btnStyle("#00e5ff"), fontSize: 14, padding: "6px 12px", minWidth: 36, letterSpacing: 0 }}>−−</button>
+              <button onClick={() => handleButton("troop_minus")}     style={{ ...btnStyle("#00e5ff"), fontSize: 22, padding: "6px 14px", minWidth: 40 }}>−</button>
+              <span style={{ color: "#ffcc00", fontFamily: "monospace", fontWeight: 700, fontSize: 30, minWidth: 44, textAlign: "center", textShadow: "0 0 12px #ffcc0088" }}>
                 {gs!.postConquestTroops}
               </span>
-              <button
-                onClick={() => handleButton("troop_plus")}
-                style={{ ...btnStyle("#455a64"), fontSize: 24, padding: "8px 20px", minWidth: 50 }}
-              >+</button>
-              <button
-                onClick={() => handleButton("troop_confirm")}
-                style={{
-                  ...btnStyle("#c62828"), fontSize: 16, padding: "12px 24px",
-                  marginLeft: 8, boxShadow: "0 0 12px #c6282866",
-                }}
-              >MOVER</button>
+              <button onClick={() => handleButton("troop_plus")}     style={{ ...btnStyle("#00e5ff"), fontSize: 22, padding: "6px 14px", minWidth: 40 }}>+</button>
+              <button onClick={() => handleButton("troop_plus_big")} style={{ ...btnStyle("#00e5ff"), fontSize: 14, padding: "6px 12px", minWidth: 36, letterSpacing: 0 }}>++</button>
+              <button onClick={() => handleButton("troop_confirm")} style={{ ...btnStyle("#ff0099"), fontSize: 14, padding: "10px 22px", marginLeft: 6 }}>MOVER</button>
             </div>
           ) : inConfirm ? (
-            <>
+            <div style={{ display: "flex", gap: 10 }}>
               <button
                 onClick={() => handleButton("attack_confirm")}
                 style={{
-                  background: "#c62828", color: "#fff", border: "2px solid #ef5350",
-                  borderRadius: 4, padding: "14px 36px", fontFamily: "monospace",
-                  fontWeight: 700, fontSize: 20, cursor: "pointer", letterSpacing: 2,
-                  boxShadow: "0 0 16px #c6282888",
+                  background: "#ff003318", color: "#ff3355", border: "1px solid #ff3355",
+                  borderRadius: 2, padding: "12px 32px", fontFamily: "monospace",
+                  fontWeight: 700, fontSize: 18, cursor: "pointer", letterSpacing: 2,
+                  boxShadow: "0 0 18px #ff335588", textTransform: "uppercase" as const,
                 }}
               >⚔ ATACAR</button>
               <button
                 onClick={() => handleButton("cancel")}
                 style={{
-                  background: "#1a2332", color: "#90a4ae", border: "2px solid #455a64",
-                  borderRadius: 4, padding: "14px 36px", fontFamily: "monospace",
-                  fontWeight: 700, fontSize: 20, cursor: "pointer", letterSpacing: 2,
+                  background: "transparent", color: "#2a4a5a", border: "1px solid #0d2030",
+                  borderRadius: 2, padding: "12px 32px", fontFamily: "monospace",
+                  fontWeight: 700, fontSize: 18, cursor: "pointer", letterSpacing: 2,
+                  textTransform: "uppercase" as const,
                 }}
               >↩ RETIRAR</button>
-            </>
+            </div>
           ) : (
-            <>
-              <button style={btnStyle("#c62828", !inAction)} onClick={() => inAction && handleButton("attack")}>ATACAR</button>
-              <button style={btnStyle("#006064", !inAction)} onClick={() => inAction && handleButton("move")}>MOVER</button>
-              <button style={btnStyle("#2e7d32")} onClick={() => handleButton("pass")}>PASAR</button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+              <button style={btnStyle("#ff3355", !inAction)} onClick={() => inAction && handleButton("attack")}>ATACAR</button>
+              <button style={btnStyle("#00e5ff", !inAction)} onClick={() => inAction && handleButton("move")}>MOVER</button>
+              <button style={btnStyle("#00ff88")} onClick={() => handleButton("pass")}>PASAR</button>
               <button
-                style={btnStyle(cardFlash ? "#1565c0" : "#424242", !gs?.cards.length)}
+                style={btnStyle(cardFlash ? "#aa00ff" : "#ffcc00", !gs?.cards.length)}
                 onClick={() => { if (gs?.cards.length) setCardFlash(f => !f); }}
               >CARTAS {gs?.cards.length ? `(${gs.cards.length})` : ""}</button>
-              <button style={btnStyle("#f57f17", !canCancel)} onClick={() => canCancel && handleButton("cancel")}>CANCELAR</button>
-            </>
+              <button style={btnStyle("#ff6600", !canCancel)} onClick={() => canCancel && handleButton("cancel")}>CANCELAR</button>
+            </div>
           )}
         </div>
 
         {/* Right: card flash or combat info */}
         <div style={{
           flex: 1, padding: "10px 16px", display: "flex", flexDirection: "column",
-          justifyContent: "center", overflowY: "auto",
+          justifyContent: "flex-start", overflowY: "auto", background: "#080612",
         }}>
+          {/* Panel header */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexShrink: 0 }}>
+            <span style={{ color: "#ff6600", fontFamily: "monospace", fontSize: 9, letterSpacing: 3, fontWeight: 700 }}>[ MESH ]</span>
+            <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg, #ff660055, transparent)" }} />
+          </div>
           {gs?.pendingCard ? (
             /* ── Discard chooser (hand was full) ── */
             <>
-              <div style={{ color: "#ffd700", fontFamily: "monospace", fontSize: 11, fontWeight: 700, marginBottom: 6, letterSpacing: 1 }}>
+              <div style={{ color: "#ffcc00", fontFamily: "monospace", fontSize: 11, fontWeight: 700, marginBottom: 6, letterSpacing: 1 }}>
                 MANO LLENA — hacé clic en una carta para descartarla
               </div>
               <div style={{ display: "flex", gap: 4, alignItems: "flex-end", flexWrap: "wrap" }}>
@@ -2229,17 +2318,17 @@ export default function MeshWarsView() {
               {/* Header */}
               {loseAllFlash ? (
                 <div style={{
-                  color: blinkVisible ? "#f44336" : "#4a0a0a",
+                  color: blinkVisible ? "#ff0099" : "#3a0020",
                   fontFamily: "monospace", fontSize: 12, fontWeight: 700,
                   marginBottom: 6, letterSpacing: 1,
-                  textShadow: blinkVisible ? "0 0 8px #f44336aa" : "none",
+                  textShadow: blinkVisible ? "0 0 10px #ff009988" : "none",
                   transition: "color 0.1s",
                 }}>☠ ¡PERDÉS TODAS TUS CARTAS!</div>
               ) : (
-                <div style={{ color: "#42a5f5", fontFamily: "monospace", fontSize: 11, fontWeight: 700, marginBottom: 6, letterSpacing: 1 }}>
+                <div style={{ color: "#aa00ff", fontFamily: "monospace", fontSize: 11, fontWeight: 700, marginBottom: 6, letterSpacing: 1 }}>
                   CARTAS ({gs.cards.length}/5)
                   {selectedCards.length < 3 && (
-                    <span style={{ color: "#546e7a", fontWeight: 400, marginLeft: 8 }}>
+                    <span style={{ color: "#3a2060", fontWeight: 400, marginLeft: 8 }}>
                       seleccioná {3 - selectedCards.length} más para canjear
                     </span>
                   )}
@@ -2307,7 +2396,7 @@ export default function MeshWarsView() {
               </div>
               {/* Trade result row — hidden during lose_all flash */}
               {!loseAllFlash && selectedCards.length === 3 && (
-                <div style={{ marginTop: 10, borderTop: "1px solid #21262d", paddingTop: 8, display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ marginTop: 8, borderTop: "1px solid #0a1828", paddingTop: 7, display: "flex", alignItems: "center", gap: 10 }}>
                   {selectionEffect ? (() => {
                     const bonus   = troopBonus(selectionEffect);
                     const em      = CARD_META[selectionEffect];
@@ -2319,50 +2408,47 @@ export default function MeshWarsView() {
                         : `${em.label} — próximamente`;
                     return (
                       <>
-                        <span style={{ color: em.color, fontFamily: "monospace", fontSize: 13 }}>
-                          {label}
-                        </span>
+                        <span style={{ color: em.color, fontFamily: "monospace", fontSize: 12 }}>{label}</span>
                         <button
                           disabled={!enabled}
                           onClick={() => handleTrade(selectedCards, selectionEffect)}
                           style={{
-                            background: enabled ? em.color : "#1a1a1a",
-                            color: enabled ? "#000" : "#444",
-                            border: "none", borderRadius: 4,
-                            padding: "5px 14px", fontFamily: "monospace",
-                            fontWeight: 700, fontSize: 13,
+                            background: enabled ? `${em.color}22` : "transparent",
+                            color: enabled ? em.color : "#1a2030",
+                            border: `1px solid ${enabled ? em.color : "#0d1828"}`,
+                            borderRadius: 2, padding: "4px 12px", fontFamily: "monospace",
+                            fontWeight: 700, fontSize: 12, letterSpacing: 1,
                             cursor: enabled ? "pointer" : "not-allowed",
+                            boxShadow: enabled ? `0 0 8px ${em.color}44` : "none",
                           }}
                         >CANJEAR</button>
                       </>
                     );
                   })() : (
-                    <span style={{ color: "#c62828", fontFamily: "monospace", fontSize: 13 }}>
-                      Combinación inválida
-                    </span>
+                    <span style={{ color: "#ff3355", fontFamily: "monospace", fontSize: 12 }}>Combinación inválida</span>
                   )}
                   <button
                     onClick={() => setSelectedCards([])}
                     style={{
-                      background: "none", color: "#546e7a", border: "1px solid #30363d",
-                      borderRadius: 4, padding: "4px 10px", fontFamily: "monospace",
-                      fontSize: 11, cursor: "pointer", marginLeft: "auto",
+                      background: "none", color: "#1a3040", border: "1px solid #0d1828",
+                      borderRadius: 2, padding: "3px 9px", fontFamily: "monospace",
+                      fontSize: 10, cursor: "pointer", marginLeft: "auto", letterSpacing: 1,
                     }}
                   >limpiar</button>
                 </div>
               )}
             </>
           ) : gs?.combatMsg ? (
-            <div style={{ color: "#ffd700", fontFamily: "monospace", fontSize: 16, fontWeight: 700, marginBottom: 6 }}>
+            <div style={{ color: "#ffcc00", fontFamily: "monospace", fontSize: 15, fontWeight: 700, marginBottom: 4, textShadow: "0 0 8px #ffcc0055" }}>
               {gs.combatMsg}
             </div>
           ) : gs?.log[0] ? (
-            <div style={{ color: "#484f58", fontFamily: "monospace", fontSize: 13 }}>
+            <div style={{ color: "#1a3040", fontFamily: "monospace", fontSize: 12 }}>
               {gs.log[0]}
             </div>
           ) : null}
           {!cardFlash && gs?.phase === "attack_confirm" && gs.attackSource && gs.attackTarget && (
-            <div style={{ color: "#90a4ae", fontFamily: "monospace", fontSize: 15, marginTop: 4 }}>
+            <div style={{ color: "#ff3355", fontFamily: "monospace", fontSize: 14, marginTop: 4, letterSpacing: 2, textShadow: "0 0 8px #ff335566" }}>
               {gs.cells[gs.attackSource].troops} CONTRA {gs.cells[gs.attackTarget].troops}
             </div>
           )}
