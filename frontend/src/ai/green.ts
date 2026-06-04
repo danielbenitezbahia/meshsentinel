@@ -3,7 +3,7 @@
 // Modo desesperado (< mitad de celdas prod): adv >= -1 para prod, adv >= 0 para nodo activo
 
 import type { GameCell, Bridge, Faction } from "./types";
-import { cellNeighbors, geoDistSq, islandCompletionBonus, islandReinfBonus } from "./utils";
+import { cellNeighbors, geoDistSq, islandCompletionBonus, islandReinfBonus, getPriorityIsland, continentAttackBonus, continentReinfBonus, breakEnemyIslandBonus } from "./utils";
 
 function lucainaMode(owned: GameCell[], cells: Record<string, GameCell>): "desperate" | "calculated" {
   const allProd   = Object.values(cells).filter(c => c.isProduction).length;
@@ -36,6 +36,7 @@ export function pickReinforcementPool(
       else if (onBorder)       weight = 1;
     }
     weight += islandReinfBonus(cell.h3Index, faction, cells, islands);
+    weight += continentReinfBonus(cell.h3Index, getPriorityIsland(faction, cells, islands));
     for (let i = 0; i < weight; i++) pool.push(cell.h3Index);
   }
   return pool.length > 0 ? pool : owned.map(c => c.h3Index);
@@ -49,7 +50,8 @@ export function pickAttack(
   focusCell: string | null,
   islands: string[][],
 ): { from: string; to: string } | null {
-  const mode = lucainaMode(owned, cells);
+  const mode     = lucainaMode(owned, cells);
+  const priority = getPriorityIsland(faction, cells, islands);
   const opts: Array<{ from: string; to: string; score: number }> = [];
 
   for (const cell of owned) {
@@ -59,9 +61,10 @@ export function pickAttack(
       if (!nb || nb.owner === cell.owner) continue;
       const adv = cell.troops - nb.troops;
 
-      // Para celdas sin valor estratégico, solo ataca si completa una isla
-      const islBonus = islandCompletionBonus(nbId, faction, cells, islands);
-      if (!nb.isProduction && !nb.isNodeActive && islBonus === 0) continue;
+      const islBonus  = islandCompletionBonus(nbId, faction, cells, islands);
+      const contBonus = continentAttackBonus(nbId, priority);
+      // Sin valor estratégico, solo ataca si completa isla o está en el continente objetivo
+      if (!nb.isProduction && !nb.isNodeActive && islBonus === 0 && contBonus === 0) continue;
 
       if (nb.isProduction) {
         if (mode === "desperate"  && adv < -1) continue;
@@ -70,7 +73,6 @@ export function pickAttack(
         if (mode === "desperate"  && adv <  0) continue;
         if (mode === "calculated" && adv <  1) continue;
       } else {
-        // celda sin valor propio pero completa isla — riesgo medio
         if (adv < 0) continue;
       }
 
@@ -78,7 +80,7 @@ export function pickAttack(
       if (nb.isProduction) score += 6;
       if (nb.isNodeActive) score += 4;
       if (mode === "desperate") score += 2;
-      score += islBonus;
+      score += islBonus + contBonus + breakEnemyIslandBonus(nbId, faction, cells, islands);
       if (focusCell) score -= geoDistSq(cell.h3Index, focusCell) * 600;
       opts.push({ from: cell.h3Index, to: nbId, score });
     }

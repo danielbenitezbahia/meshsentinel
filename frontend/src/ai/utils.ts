@@ -13,6 +13,67 @@ export function geoDistSq(a: string, b: string): number {
   return (la - lb) ** 2 + (lo - ll) ** 2;
 }
 
+// Devuelve la isla donde la facción tiene mayor % de ocupación (su "continente objetivo").
+export function getPriorityIsland(
+  faction: Faction,
+  cells: Record<string, GameCell>,
+  islands: string[][],
+): { island: string[]; pct: number; complete: boolean } | null {
+  let best: { island: string[]; pct: number; complete: boolean } | null = null;
+  for (const island of islands) {
+    if (island.length < 3) continue;
+    const owned = island.filter(id => cells[id]?.owner === faction).length;
+    if (owned === 0) continue;
+    const pct      = owned / island.length;
+    const complete = owned === island.length;
+    if (!best || pct > best.pct) best = { island, pct, complete };
+  }
+  return best;
+}
+
+// Bonus para atacar/reforzar dentro del continente objetivo.
+// Si está completa, bonus reducido (deja competir a otras estrategias).
+export function continentAttackBonus(
+  targetId: string,
+  priority: { island: string[]; pct: number; complete: boolean } | null,
+): number {
+  if (!priority || !priority.island.includes(targetId)) return 0;
+  return priority.complete ? 4 : 12;
+}
+
+export function continentReinfBonus(
+  cellId: string,
+  priority: { island: string[]; pct: number; complete: boolean } | null,
+): number {
+  if (!priority || !priority.island.includes(cellId)) return 0;
+  return priority.complete ? 2 : 5;
+}
+
+// Bonus para atacar celdas en islas enemigas completas o casi completas
+// (romper continente enemigo → le quita el bonus de refuerzo).
+export function breakEnemyIslandBonus(
+  targetId: string,
+  faction: Faction,
+  cells: Record<string, GameCell>,
+  islands: string[][],
+): number {
+  for (const island of islands) {
+    if (!island.includes(targetId)) continue;
+    if (island.length < 3) continue;
+    const enemyCounts: Partial<Record<Faction, number>> = {};
+    for (const id of island) {
+      const owner = cells[id]?.owner;
+      if (owner && owner !== faction) enemyCounts[owner] = (enemyCounts[owner] ?? 0) + 1;
+    }
+    for (const [, count] of Object.entries(enemyCounts)) {
+      const pct = count / island.length;
+      if (pct === 1)   return 8;  // isla 100% enemiga → romperla vale mucho
+      if (pct >= 0.8)  return 5;  // casi completa → prevenir que la complete
+    }
+  }
+  return 0;
+}
+
 // Bonus para atacar una celda que acerca a la facción a controlar una isla entera.
 // Controlar una isla completa da +2 refuerzos por turno → vale la pena priorizarlo.
 // El bonus decae según cuántas celdas faltan para completar la isla (máx 3 ataques/turno).

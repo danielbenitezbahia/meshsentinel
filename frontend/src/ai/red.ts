@@ -2,7 +2,7 @@
 // Tolerancia al riesgo: media-alta (ataca con adv >= -1)
 
 import type { GameCell, Bridge, Faction } from "./types";
-import { cellNeighbors, geoDistSq, islandCompletionBonus, islandReinfBonus } from "./utils";
+import { cellNeighbors, geoDistSq, islandCompletionBonus, islandReinfBonus, getPriorityIsland, continentAttackBonus, continentReinfBonus, breakEnemyIslandBonus } from "./utils";
 
 export function pickReinforcementPool(
   faction: Faction,
@@ -11,6 +11,7 @@ export function pickReinforcementPool(
   bridges: Bridge[],
   islands: string[][],
 ): string[] {
+  const priority = getPriorityIsland(faction, cells, islands);
   const pool: string[] = [];
   for (const cell of owned) {
     const nbs        = cellNeighbors(cell.h3Index, cells, bridges);
@@ -19,7 +20,8 @@ export function pickReinforcementPool(
     const weakEnemies = enemies.filter(id => (cells[id]?.troops ?? 99) <= 2).length;
     const infraBonus  = (cell.isProduction || cell.isNodeActive) ? 2 : 0;
     const islBonus    = islandReinfBonus(cell.h3Index, faction, cells, islands);
-    const weight      = enemies.length * 2 + weakEnemies + infraBonus + islBonus;
+    const contBonus   = continentReinfBonus(cell.h3Index, priority);
+    const weight      = enemies.length * 2 + weakEnemies + infraBonus + islBonus + contBonus;
     for (let i = 0; i < weight; i++) pool.push(cell.h3Index);
   }
   return pool.length > 0 ? pool : owned.map(c => c.h3Index);
@@ -33,6 +35,7 @@ export function pickAttack(
   focusCell: string | null,
   islands: string[][],
 ): { from: string; to: string } | null {
+  const priority = getPriorityIsland(faction, cells, islands);
   const opts: Array<{ from: string; to: string; score: number }> = [];
 
   for (const cell of owned) {
@@ -46,6 +49,8 @@ export function pickAttack(
       if (nb.isProduction) score += 4;
       if (nb.isNodeActive) score += 3;
       score += islandCompletionBonus(nbId, faction, cells, islands);
+      score += continentAttackBonus(nbId, priority);
+      score += breakEnemyIslandBonus(nbId, faction, cells, islands);
       if (focusCell) score -= geoDistSq(cell.h3Index, focusCell) * 600;
       opts.push({ from: cell.h3Index, to: nbId, score });
     }

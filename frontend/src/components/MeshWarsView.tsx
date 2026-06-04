@@ -835,7 +835,21 @@ function runCensusFlash(
 
 // ── init ──────────────────────────────────────────────────────────────────────
 
-function initGame(nodes: MeshNode[]): GameState {
+type Difficulty = "easy" | "medium" | "hard" | "vhard";
+const DIFFICULTY_PLAYER_FRACTION: Record<Difficulty, number> = {
+  easy:   0.40,
+  medium: 0.30,
+  hard:   0.22,
+  vhard:  0.15,
+};
+const DIFFICULTY_LABEL: Record<Difficulty, string> = {
+  easy:   "FÁCIL",
+  medium: "MEDIO",
+  hard:   "DIFÍCIL",
+  vhard:  "MUY DIFÍCIL",
+};
+
+function initGame(nodes: MeshNode[], difficulty: Difficulty = "medium"): GameState {
   const active = nodes.filter(n => {
     if (n.lat == null || n.lon == null) return false;
     const name = n.long_name ?? n.short_name ?? n.node_id;
@@ -858,12 +872,23 @@ function initGame(nodes: MeshNode[]): GameState {
 
   const cells    = buildCells(cellMap);
   const shuffled = Object.keys(cells).sort(() => Math.random() - 0.5);
-  const perF     = Math.ceil(shuffled.length / 4);
+  const n        = shuffled.length;
+  const playerN  = Math.max(1, Math.round(n * DIFFICULTY_PLAYER_FRACTION[difficulty]));
+  const aiN      = Math.floor((n - playerN) / 3);
+  const counts: Record<Faction, number> = {
+    player: playerN,
+    ai1:    aiN,
+    ai2:    aiN,
+    ai3:    n - playerN - aiN * 2, // remainder to last AI
+  };
   const order: Faction[] = ["player", "ai1", "ai2", "ai3"];
-  shuffled.forEach((id, i) => {
-    cells[id].owner  = order[Math.min(Math.floor(i / perF), 3)];
-    cells[id].troops = Math.floor(Math.random() * 3) + 2;
-  });
+  let idx = 0;
+  for (const faction of order) {
+    for (let i = 0; i < counts[faction]; i++, idx++) {
+      cells[shuffled[idx]].owner  = faction;
+      cells[shuffled[idx]].troops = Math.floor(Math.random() * 3) + 2;
+    }
+  }
 
   const mst     = buildMST(cells);
   const bridges = [...mst, ...buildSemanticBridges(cells, mst)];
@@ -1092,6 +1117,7 @@ export default function MeshWarsView() {
   const [introState, setIntroState] = useState<"start" | "typing" | "done" | "tutorial_slides">("start");
   const [tutorialMode, setTutorialMode] = useState(false);
   const [tutorialSlide, setTutorialSlide] = useState(0);
+  const [difficulty, setDifficulty] = useState<Difficulty>("medium");
   const [introChars, setIntroChars] = useState(0);
   const [introCursor, setIntroCursor] = useState(true);
   const introStopRef = useRef<(() => void) | null>(null);
@@ -1950,7 +1976,7 @@ export default function MeshWarsView() {
 
   function startGame() {
     fittedRef.current = false;
-    setGs(initGame(nodesRef.current));
+    setGs(initGame(nodesRef.current, difficulty));
   }
 
   function handleTrade(indices: number[], effectType: CardType) {
@@ -2286,20 +2312,42 @@ export default function MeshWarsView() {
               {nodesReady ? "Datos de la mesh cargados" : "Cargando nodos..."}
             </div>
             {nodesReady && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-                <button style={btnStyle("#c62828")} onClick={() => {
-                  setTutorialMode(false);
-                  introStopRef.current = startIntroMusic();
-                  setIntroChars(0);
-                  setIntroState("typing");
-                }}>⚔ COMENZAR PARTIDA</button>
-                <button style={btnStyle("#00e5ff")} onClick={() => {
-                  setTutorialMode(true);
-                  setTutorialSlide(0);
-                  introStopRef.current = startIntroMusic();
-                  setIntroChars(0);
-                  setIntroState("typing");
-                }}>📖 JUGAR CON GUÍA</button>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+                {/* Difficulty selector */}
+                <div style={{ display: "flex", gap: 6 }}>
+                  {(["easy","medium","hard","vhard"] as Difficulty[]).map(d => {
+                    const active = difficulty === d;
+                    const color  = d === "easy" ? "#00ff88" : d === "medium" ? "#00e5ff" : d === "hard" ? "#ffcc00" : "#ff3355";
+                    return (
+                      <button key={d} onClick={() => setDifficulty(d)} style={{
+                        background: active ? `${color}22` : "transparent",
+                        color: active ? color : "#2a4a5a",
+                        border: `1px solid ${active ? color : "#0d2030"}`,
+                        borderRadius: 2, padding: "6px 12px",
+                        fontFamily: "monospace", fontWeight: 700, fontSize: 11,
+                        cursor: "pointer", letterSpacing: 2,
+                        boxShadow: active ? `0 0 10px ${color}55` : "none",
+                        textTransform: "uppercase" as const,
+                      }}>{DIFFICULTY_LABEL[d]}</button>
+                    );
+                  })}
+                </div>
+                {/* Action buttons */}
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                  <button style={btnStyle("#c62828")} onClick={() => {
+                    setTutorialMode(false);
+                    introStopRef.current = startIntroMusic();
+                    setIntroChars(0);
+                    setIntroState("typing");
+                  }}>⚔ COMENZAR PARTIDA</button>
+                  <button style={btnStyle("#00e5ff")} onClick={() => {
+                    setTutorialMode(true);
+                    setTutorialSlide(0);
+                    introStopRef.current = startIntroMusic();
+                    setIntroChars(0);
+                    setIntroState("typing");
+                  }}>📖 JUGAR CON GUÍA</button>
+                </div>
               </div>
             )}
           </div>

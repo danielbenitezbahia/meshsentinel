@@ -2,7 +2,7 @@
 // Tolerancia al riesgo: baja (solo ataca con adv >= 2)
 
 import type { GameCell, Bridge, Faction } from "./types";
-import { cellNeighbors, geoDistSq, islandCompletionBonus, islandReinfBonus } from "./utils";
+import { cellNeighbors, geoDistSq, islandCompletionBonus, islandReinfBonus, getPriorityIsland, continentAttackBonus, continentReinfBonus, breakEnemyIslandBonus } from "./utils";
 
 export function pickReinforcementPool(
   faction: Faction,
@@ -18,7 +18,8 @@ export function pickReinforcementPool(
     if (enemyCount === 0) continue;
     const infraBonus = (cell.isProduction || cell.isNodeActive) ? 3 : 0;
     const islBonus   = islandReinfBonus(cell.h3Index, faction, cells, islands);
-    const weight     = enemyCount * 2 + infraBonus + islBonus;
+    const contBonus  = continentReinfBonus(cell.h3Index, getPriorityIsland(faction, cells, islands));
+    const weight     = enemyCount * 2 + infraBonus + islBonus + contBonus;
     for (let i = 0; i < weight; i++) pool.push(cell.h3Index);
   }
   return pool.length > 0 ? pool : owned.map(c => c.h3Index);
@@ -50,7 +51,8 @@ export function pickAttack(
       const targetNbs            = cellNeighbors(nbId, cells, bridges);
       const ownNeighborsOfTarget = targetNbs.filter(id => ownSet.has(id)).length;
 
-      let score = adv + ownNeighborsOfTarget * 1.5 + islBonus;
+      const contBonus = continentAttackBonus(nbId, getPriorityIsland(faction, cells, islands));
+      let score = adv + ownNeighborsOfTarget * 1.5 + islBonus + contBonus + breakEnemyIslandBonus(nbId, faction, cells, islands);
       if (nb.isProduction)            score += 3;
       if (nb.isNodeActive)            score += 2;
       if (ownNeighborsOfTarget === 0) score -= 4;

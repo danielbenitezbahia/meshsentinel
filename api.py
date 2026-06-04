@@ -561,7 +561,7 @@ def get_traffic_stats():
         if row["channel_idx"] == 0:
             key = row["portnum"] if row["portnum"] in KNOWN_PORTNUMS else "OTHER"
             public[key] = public.get(key, 0) + cnt
-        elif row["is_encrypted"] and row["channel_idx"] <= 7:
+        elif row["is_encrypted"]:
             priv_enc += cnt
         else:
             key = row["portnum"] if row["portnum"] in KNOWN_PORTNUMS else "OTHER"
@@ -637,7 +637,7 @@ def get_traffic_evolution():
             by_label[lbl] = {"label": lbl, "public": 0, "other_mesh": 0, "private_encrypted": 0}
         if row["channel_idx"] == 0:
             by_label[lbl]["public"] += row["cnt"]
-        elif row["is_encrypted"] and row["channel_idx"] <= 7:
+        elif row["is_encrypted"]:
             by_label[lbl]["private_encrypted"] += row["cnt"]
         else:
             by_label[lbl]["other_mesh"] += row["cnt"]
@@ -651,7 +651,8 @@ def get_stats_nodes():
     limit  = min(int(request.args.get("limit", 10)), 50)
     since  = _stats_since(period)
 
-    def top_nodes(extra_where: str):
+    def top_nodes(extra_where: str, min_count: int = 1):
+        having = f"HAVING COUNT(*) >= {min_count}" if min_count > 1 else ""
         return _q(f"""
             SELECT ca.node_id,
                    COALESCE(ns.long_name, ns.short_name, ca.node_id) AS name,
@@ -660,6 +661,7 @@ def get_stats_nodes():
             LEFT JOIN node_stats ns ON ns.node_id = ca.node_id
             WHERE ca.ts >= ? {extra_where}
             GROUP BY ca.node_id
+            {having}
             ORDER BY count DESC
             LIMIT ?
         """, (since, limit))
@@ -667,7 +669,7 @@ def get_stats_nodes():
     return jsonify({
         "public":            top_nodes("AND ca.channel_idx = 0"),
         "other_mesh":        top_nodes("AND ca.channel_idx > 0 AND COALESCE(ca.is_encrypted,0) = 0"),
-        "private_encrypted": top_nodes("AND ca.channel_idx > 0 AND ca.channel_idx <= 7 AND COALESCE(ca.is_encrypted,0) = 1"),
+        "private_encrypted": top_nodes("AND ca.channel_idx > 0 AND COALESCE(ca.is_encrypted,0) = 1", min_count=2),
     })
 
 
