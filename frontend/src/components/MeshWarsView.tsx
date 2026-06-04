@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import meshwarsLogo from "../assets/meshwars-logo.png";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { latLngToCell, gridDisk, cellToBoundary, cellToLatLng } from "h3-js";
@@ -229,11 +230,16 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
 
   const TARGET_CELLS = 50;
 
-  // helper: add N synthetic neighbors spread evenly around anchorId
-  const addSynthetics = (anchorId: string, anchorName: string, count: number) => {
+  // helper: add N synthetic neighbors spread evenly around anchorId.
+  // ownOccupied tracks cells belonging to the current island being extended;
+  // candidates adjacent to any OTHER occupied cell are rejected to prevent island merges.
+  const addSynthetics = (anchorId: string, anchorName: string, count: number, ownOccupied: Set<string>) => {
     const [cLat, cLon] = cellToLatLng(anchorId);
     const free = gridDisk(anchorId, 1)
-      .filter(nb => nb !== anchorId && !occupied.has(nb))
+      .filter(nb => {
+        if (nb === anchorId || occupied.has(nb)) return false;
+        return gridDisk(nb, 1).every(x => x === nb || !occupied.has(x) || ownOccupied.has(x));
+      })
       .sort((a, b) => {
         const [aLat, aLon] = cellToLatLng(a), [bLat, bLon] = cellToLatLng(b);
         return bearingDeg(cLat, cLon, aLat, aLon) - bearingDeg(cLat, cLon, bLat, bLon);
@@ -247,6 +253,7 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
       if (usedDirs.has(dir)) dir += " 2";
       usedDirs.add(dir);
       occupied.add(nb);
+      ownOccupied.add(nb);
       cells[nb] = { h3Index: nb, owner: "player", troops: 0,
         nodeName: `${anchorName} - ${dir}`, isNodeActive: false, isSynthetic: true, isProduction: false };
     }
@@ -257,7 +264,7 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
     const gap = TARGET_CELLS - Object.keys(cells).length;
     const node = cellMap.get(nodeId)!;
     const count = gap >= 4 ? 4 : 2; // minimum 2 → always 3-cell island
-    addSynthetics(nodeId, node.long_name ?? node.short_name ?? node.node_id, count);
+    addSynthetics(nodeId, node.long_name ?? node.short_name ?? node.node_id, count, new Set([nodeId]));
   }
 
   // 2-cell islands → always add 1st synthetic (minimum 3 cells), 2nd if gap allows
@@ -280,7 +287,7 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
     cells[cand] = { h3Index: cand, owner: "player", troops: 0,
       nodeName: `${name} - ${bearingToDir(bearingDeg(aLat, aLon, cLat, cLon))}`,
       isNodeActive: false, isSynthetic: true, isProduction: false };
-    if (gap >= 2) addSynthetics(idA === anchorId ? idB : idA, name, 1);
+    if (gap >= 2) addSynthetics(idA === anchorId ? idB : idA, name, 1, new Set([idA, idB, cand]));
   }
 
   // 3-cell islands → add 1 synthetic if still below target
@@ -296,33 +303,76 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
     const anchorName = anchorCell.isSynthetic
       ? anchorCell.nodeName.replace(/ - (N|NE|E|SE|S|SO|O|NO)( 2)?$/, "")
       : anchorCell.nodeName;
-    addSynthetics(anchor, anchorName, 1);
+    addSynthetics(anchor, anchorName, 1, new Set(comp));
   }
-  // Cap oversized islands: remove peripheral synthetics until ≤ MAX_ISLAND_CELLS
+
+  // Cap oversized islands recursively.
+  // Prefers removing synthetics; falls back to real nodes if needed.
+  // Picks the removal that minimizes the largest resulting sub-component.
   const MAX_ISLAND_CELLS = 11;
-  const finalComps = findComponents(Object.keys(cells));
-  for (const comp of finalComps) {
-    if (comp.length <= MAX_ISLAND_CELLS) continue;
-    const compSet = new Set(comp);
-    let size = comp.length;
-    // Sort synthetics by in-component degree ascending (leaves first)
-    const removable = comp
-      .filter(id => cells[id].isSynthetic)
-      .sort((a, b) => {
-        const degA = gridDisk(a, 1).filter(nb => nb !== a && compSet.has(nb)).length;
-        const degB = gridDisk(b, 1).filter(nb => nb !== b && compSet.has(nb)).length;
-        return degA - degB;
-      });
-    for (const id of removable) {
-      if (size <= MAX_ISLAND_CELLS) break;
-      // Only remove leaves to avoid disconnecting the component
-      const deg = gridDisk(id, 1).filter(nb => nb !== id && compSet.has(nb)).length;
-      if (deg > 1) continue;
-      delete cells[id];
-      occupied.delete(id);
-      compSet.delete(id);
-      size--;
+  function capComponent(ids: string[]): void {
+    if (ids.length <= MAX_ISLAND_CELLS) return;
+    const synths = ids.filter(id => cells[id]?.isSynthetic);
+    // Prefer synthetics; if none, allow removing non-production real nodes
+    const candidates = synths.length > 0
+      ? synths
+      : ids.filter(id => !cells[id]?.isProduction);
+    if (candidates.length === 0) return; // all production nodes — can't cap
+    let bestId = candidates[0];
+    let bestMax = ids.length;
+    for (const id of candidates) {
+      const rem = ids.filter(x => x !== id);
+      const maxSub = Math.max(...findComponents(rem).map(s => s.length));
+      if (maxSub < bestMax) { bestMax = maxSub; bestId = id; }
     }
+    delete cells[bestId];
+    occupied.delete(bestId);
+    for (const sc of findComponents(ids.filter(x => x !== bestId))) {
+      capComponent(sc);
+    }
+  }
+  for (const comp of findComponents(Object.keys(cells))) {
+    capComponent(comp);
+  }
+
+  // Guarantee at least one island [10,11] and one [8,9].
+  // Grows islands by appending safe synthetics one cell at a time.
+  function growIsland(ids: string[], targetMin: number, targetMax: number): void {
+    const ownOccupied = new Set(ids);
+    const current = [...ids];
+    while (current.length < targetMin) {
+      let grew = false;
+      for (const id of [...current]) {
+        if (current.length >= targetMax) break;
+        const [cLat, cLon] = cellToLatLng(id);
+        const free = gridDisk(id, 1).filter(nb => {
+          if (nb === id || occupied.has(nb)) return false;
+          return gridDisk(nb, 1).every(x => x === nb || !occupied.has(x) || ownOccupied.has(x));
+        });
+        if (free.length === 0) continue;
+        const nb = free[0];
+        const baseName = cells[id].nodeName.replace(/ - (N|NE|E|SE|S|SO|O|NO)( 2)?$/, "");
+        const [nLat, nLon] = cellToLatLng(nb);
+        const dir = bearingToDir(bearingDeg(cLat, cLon, nLat, nLon));
+        occupied.add(nb); ownOccupied.add(nb);
+        cells[nb] = { h3Index: nb, owner: "player", troops: 0,
+          nodeName: `${baseName} - ${dir}`, isNodeActive: false, isSynthetic: true, isProduction: false };
+        current.push(nb);
+        grew = true;
+        break;
+      }
+      if (!grew) break;
+    }
+  }
+
+  let postComps = findComponents(Object.keys(cells)).sort((a, b) => b.length - a.length);
+  if (!postComps.some(c => c.length >= 10)) {
+    growIsland(postComps[0], 10, 11);
+    postComps = findComponents(Object.keys(cells)).sort((a, b) => b.length - a.length);
+  }
+  if (!postComps.some(c => c.length >= 8 && c.length <= 9)) {
+    const candidate = postComps.find(c => c.length < 8 && c.length >= 3);
+    if (candidate) growIsland(candidate, 8, 9);
   }
 
   return cells;
@@ -607,7 +657,24 @@ const SFX = {
     setTimeout(() => playTone(1318.5, 0.10, "square", 0.14), 150);
     setTimeout(() => playTone(1760,   0.12, "sine",   0.09), 260);
   },
+  menuStart: () => {
+    playTone(220, 0.05, "square", 0.12);
+    setTimeout(() => playTone(330, 0.05, "square", 0.14), 55);
+    setTimeout(() => playTone(440, 0.05, "square", 0.16), 110);
+    setTimeout(() => playTone(660, 0.18, "square", 0.18), 170);
+  },
+  menuGuide: () => {
+    playTone(440, 0.07, "sine", 0.10);
+    setTimeout(() => playTone(550, 0.07, "sine", 0.12), 80);
+    setTimeout(() => playTone(660, 0.12, "sine", 0.10), 165);
+  },
 };
+
+function playDiffSound(d: Difficulty) {
+  const freq: Record<Difficulty, number> = { easy: 660, medium: 550, hard: 440, vhard: 330 };
+  playTone(freq[d], 0.06, "square", 0.10);
+  setTimeout(() => playTone(freq[d] * 1.5, 0.05, "square", 0.07), 65);
+}
 
 // ── intro ─────────────────────────────────────────────────────────────────────
 
@@ -2305,42 +2372,44 @@ export default function MeshWarsView() {
             position: "absolute", inset: 0, display: "flex", flexDirection: "column",
             alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.7)", zIndex: 2000,
           }}>
-            <div style={{ fontFamily: "monospace", color: "#1976d2", fontSize: 32, fontWeight: 700, marginBottom: 8 }}>
-              MESH WARS
-            </div>
+            <img src={meshwarsLogo} alt="MESH WARS" style={{ width: 480, maxWidth: "80vw", marginBottom: 8 }} />
             <div style={{ color: "#8b949e", marginBottom: 24, fontFamily: "monospace" }}>
               {nodesReady ? "Datos de la mesh cargados" : "Cargando nodos..."}
             </div>
             {nodesReady && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
-                {/* Difficulty selector */}
-                <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 28, alignItems: "center" }}>
+                {/* Difficulty selector — vertical column */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ color: "#4a8a9a", fontFamily: "monospace", fontSize: 10, letterSpacing: 3, marginBottom: 4, textAlign: "center" }}>DIFICULTAD</div>
                   {(["easy","medium","hard","vhard"] as Difficulty[]).map(d => {
                     const active = difficulty === d;
                     const color  = d === "easy" ? "#00ff88" : d === "medium" ? "#00e5ff" : d === "hard" ? "#ffcc00" : "#ff3355";
                     return (
-                      <button key={d} onClick={() => setDifficulty(d)} style={{
-                        background: active ? `${color}22` : "transparent",
-                        color: active ? color : "#2a4a5a",
-                        border: `1px solid ${active ? color : "#0d2030"}`,
-                        borderRadius: 2, padding: "6px 12px",
+                      <button key={d} onClick={() => { setDifficulty(d); playDiffSound(d); }} style={{
+                        background: active ? `${color}22` : "#0a1a24",
+                        color: active ? color : "#6a9ab0",
+                        border: `1px solid ${active ? color : "#2a4a5a"}`,
+                        borderRadius: 2, padding: "6px 16px",
                         fontFamily: "monospace", fontWeight: 700, fontSize: 11,
                         cursor: "pointer", letterSpacing: 2,
                         boxShadow: active ? `0 0 10px ${color}55` : "none",
                         textTransform: "uppercase" as const,
+                        transition: "all 0.15s",
                       }}>{DIFFICULTY_LABEL[d]}</button>
                     );
                   })}
                 </div>
-                {/* Action buttons */}
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-                  <button style={btnStyle("#c62828")} onClick={() => {
+                {/* Action buttons — fixed width so both are equal */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, width: 220 }}>
+                  <button style={{ ...btnStyle("#c62828"), width: "100%" }} onClick={() => {
+                    SFX.menuStart();
                     setTutorialMode(false);
                     introStopRef.current = startIntroMusic();
                     setIntroChars(0);
                     setIntroState("typing");
                   }}>⚔ COMENZAR PARTIDA</button>
-                  <button style={btnStyle("#00e5ff")} onClick={() => {
+                  <button style={{ ...btnStyle("#00e5ff"), width: "100%" }} onClick={() => {
+                    SFX.menuGuide();
                     setTutorialMode(true);
                     setTutorialSlide(0);
                     introStopRef.current = startIntroMusic();
@@ -2506,7 +2575,7 @@ export default function MeshWarsView() {
 
       {/* Bottom bar — cyberpunk */}
       <div style={{
-        height: 160, flexShrink: 0, display: "flex", background: "#06090f",
+        height: 160, flexShrink: 0, display: gs ? "flex" : "none", background: "#06090f",
         position: "relative",
       }}>
         {/* Gradient top accent */}
