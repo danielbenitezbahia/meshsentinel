@@ -105,7 +105,7 @@ class Interface:
                 if not lat_i or not lon_i:
                     continue
                 nid = node_id.lower() if isinstance(node_id, str) else f"!{node_id:08x}"
-                traffic_stats.update_node_position(nid, lat_i / 1e7, lon_i / 1e7, pos.get("altitude"))
+                traffic_stats.update_node_position(nid, lat_i / 1e7, lon_i / 1e7, pos.get("altitude"), touch_last_seen=False)
                 count += 1
             logger.info("Seeded %d node positions from device node database", count)
         except Exception:

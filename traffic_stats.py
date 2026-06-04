@@ -473,19 +473,31 @@ def record_error(sender_id: str):
     con.close()
 
 
-def update_node_position(node_id: str, lat: float, lon: float, altitude: Optional[int]):
+def update_node_position(node_id: str, lat: float, lon: float, altitude: Optional[int],
+                         touch_last_seen: bool = True):
     ts = _now()
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute("""
-    INSERT INTO node_stats (node_id, first_seen_ts, last_seen_ts, lat, lon, altitude, position_ts)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(node_id) DO UPDATE SET
-        lat          = excluded.lat,
-        lon          = excluded.lon,
-        altitude     = excluded.altitude,
-        position_ts  = excluded.position_ts,
-        last_seen_ts = excluded.last_seen_ts
-    """, (node_id, ts, ts, lat, lon, altitude, ts))
+    if touch_last_seen:
+        cur.execute("""
+        INSERT INTO node_stats (node_id, first_seen_ts, last_seen_ts, lat, lon, altitude, position_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET
+            lat          = excluded.lat,
+            lon          = excluded.lon,
+            altitude     = excluded.altitude,
+            position_ts  = excluded.position_ts,
+            last_seen_ts = excluded.last_seen_ts
+        """, (node_id, ts, ts, lat, lon, altitude, ts))
+    else:
+        cur.execute("""
+        INSERT INTO node_stats (node_id, first_seen_ts, last_seen_ts, lat, lon, altitude, position_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET
+            lat         = excluded.lat,
+            lon         = excluded.lon,
+            altitude    = excluded.altitude,
+            position_ts = excluded.position_ts
+        """, (node_id, ts, ts, lat, lon, altitude, ts))
     con.commit()
     con.close()

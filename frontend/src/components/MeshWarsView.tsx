@@ -227,8 +227,42 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
 
   const components = findComponents([...cellMap.keys()]);
 
-  // 2-cell islands → add 1 synthetic
+  const TARGET_CELLS = 50;
+
+  // helper: add N synthetic neighbors spread evenly around anchorId
+  const addSynthetics = (anchorId: string, anchorName: string, count: number) => {
+    const [cLat, cLon] = cellToLatLng(anchorId);
+    const free = gridDisk(anchorId, 1)
+      .filter(nb => nb !== anchorId && !occupied.has(nb))
+      .sort((a, b) => {
+        const [aLat, aLon] = cellToLatLng(a), [bLat, bLon] = cellToLatLng(b);
+        return bearingDeg(cLat, cLon, aLat, aLon) - bearingDeg(cLat, cLon, bLat, bLon);
+      });
+    const n     = Math.min(count, free.length);
+    const toAdd = Array.from({ length: n }, (_, i) => free[Math.floor(i * free.length / n)]);
+    const usedDirs = new Set<string>();
+    for (const nb of toAdd) {
+      const [nLat, nLon] = cellToLatLng(nb);
+      let dir = bearingToDir(bearingDeg(cLat, cLon, nLat, nLon));
+      if (usedDirs.has(dir)) dir += " 2";
+      usedDirs.add(dir);
+      occupied.add(nb);
+      cells[nb] = { h3Index: nb, owner: "player", troops: 0,
+        nodeName: `${anchorName} - ${dir}`, isNodeActive: false, isSynthetic: true, isProduction: false };
+    }
+  };
+
+  // 1-cell islands → always at least 2 synthetics (triangle), 4 if gap allows
+  for (const [nodeId] of components.filter(c => c.length === 1)) {
+    const gap = TARGET_CELLS - Object.keys(cells).length;
+    const node = cellMap.get(nodeId)!;
+    const count = gap >= 4 ? 4 : 2; // minimum 2 → always 3-cell island
+    addSynthetics(nodeId, node.long_name ?? node.short_name ?? node.node_id, count);
+  }
+
+  // 2-cell islands → always add 1st synthetic (minimum 3 cells), 2nd if gap allows
   for (const comp of components.filter(c => c.length === 2)) {
+    const gap = TARGET_CELLS - Object.keys(cells).length;
     const [idA, idB] = comp;
     const islandSet  = new Set(comp);
     const nbA = gridDisk(idA, 1).filter(nb => nb !== idA && !occupied.has(nb));
@@ -241,51 +275,56 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
     const [aLat, aLon] = cellToLatLng(idA);
     const [bLat, bLon] = cellToLatLng(idB);
     const anchorId = haversineKm(cLat, cLon, aLat, aLon) <= haversineKm(cLat, cLon, bLat, bLon) ? idA : idB;
-    const name     = (cellMap.get(anchorId)!.long_name ?? cellMap.get(anchorId)!.short_name ?? anchorId);
+    const name     = cellMap.get(anchorId)!.long_name ?? cellMap.get(anchorId)!.short_name ?? anchorId;
     occupied.add(cand);
-    cells[cand] = {
-      h3Index: cand, owner: "player", troops: 0,
+    cells[cand] = { h3Index: cand, owner: "player", troops: 0,
       nodeName: `${name} - ${bearingToDir(bearingDeg(aLat, aLon, cLat, cLon))}`,
-      isNodeActive: false, isSynthetic: true, isProduction: false,
-    };
+      isNodeActive: false, isSynthetic: true, isProduction: false };
+    if (gap >= 2) addSynthetics(idA === anchorId ? idB : idA, name, 1);
   }
 
-  // 1-cell islands → add 2 synthetics (compact triangle)
-  for (const [nodeId] of components.filter(c => c.length === 1)) {
-    const node       = cellMap.get(nodeId)!;
-    const anchorName = node.long_name ?? node.short_name ?? node.node_id;
-    const [cLat, cLon] = cellToLatLng(nodeId);
-    const ring = gridDisk(nodeId, 1)
-      .filter(nb => nb !== nodeId)
+  // 3-cell islands → add 1 synthetic if still below target
+  for (const comp of components.filter(c => c.length === 3)) {
+    if (Object.keys(cells).length >= TARGET_CELLS) break;
+    const islandSet = new Set(comp);
+    const anchor = comp.reduce((best, id) => {
+      const a = gridDisk(id, 1).filter(nb => nb !== id && islandSet.has(nb)).length;
+      const b = gridDisk(best, 1).filter(nb => nb !== best && islandSet.has(nb)).length;
+      return a > b ? id : best;
+    });
+    const anchorCell = cells[anchor];
+    const anchorName = anchorCell.isSynthetic
+      ? anchorCell.nodeName.replace(/ - (N|NE|E|SE|S|SO|O|NO)( 2)?$/, "")
+      : anchorCell.nodeName;
+    addSynthetics(anchor, anchorName, 1);
+  }
+  // Cap oversized islands: remove peripheral synthetics until ≤ MAX_ISLAND_CELLS
+  const MAX_ISLAND_CELLS = 11;
+  const finalComps = findComponents(Object.keys(cells));
+  for (const comp of finalComps) {
+    if (comp.length <= MAX_ISLAND_CELLS) continue;
+    const compSet = new Set(comp);
+    let size = comp.length;
+    // Sort synthetics by in-component degree ascending (leaves first)
+    const removable = comp
+      .filter(id => cells[id].isSynthetic)
       .sort((a, b) => {
-        const [aLat, aLon] = cellToLatLng(a), [bLat, bLon] = cellToLatLng(b);
-        return bearingDeg(cLat, cLon, aLat, aLon) - bearingDeg(cLat, cLon, bLat, bLon);
+        const degA = gridDisk(a, 1).filter(nb => nb !== a && compSet.has(nb)).length;
+        const degB = gridDisk(b, 1).filter(nb => nb !== b && compSet.has(nb)).length;
+        return degA - degB;
       });
-    let pair: [string, string] | null = null;
-    for (let i = 0; i < 6; i++) {
-      const a = ring[i], b = ring[(i + 1) % 6];
-      if (!occupied.has(a) && !occupied.has(b)) { pair = [a, b]; break; }
-    }
-    if (!pair) {
-      const free = ring.filter(nb => !occupied.has(nb));
-      if (free.length >= 2) pair = [free[0], free[1]];
-      else if (free.length === 1) pair = [free[0], free[0]];
-    }
-    if (!pair) continue;
-    const usedDirs = new Set<string>();
-    for (const nb of pair) {
-      const [nLat, nLon] = cellToLatLng(nb);
-      let dir = bearingToDir(bearingDeg(cLat, cLon, nLat, nLon));
-      if (usedDirs.has(dir)) dir += " 2";
-      usedDirs.add(dir);
-      occupied.add(nb);
-      cells[nb] = {
-        h3Index: nb, owner: "player", troops: 0,
-        nodeName: `${anchorName} - ${dir}`,
-        isNodeActive: false, isSynthetic: true, isProduction: false,
-      };
+    for (const id of removable) {
+      if (size <= MAX_ISLAND_CELLS) break;
+      // Only remove leaves to avoid disconnecting the component
+      const deg = gridDisk(id, 1).filter(nb => nb !== id && compSet.has(nb)).length;
+      if (deg > 1) continue;
+      delete cells[id];
+      occupied.delete(id);
+      compSet.delete(id);
+      size--;
     }
   }
+
   return cells;
 }
 
@@ -573,30 +612,39 @@ const SFX = {
 // ── intro ─────────────────────────────────────────────────────────────────────
 
 const INTRO_TEXT =
-`Año 2051.
+`Año 2045
 
-Casi toda la humanidad ya no habita el mundo físico.
+Gran parte de la humanidad ha quedado extinta.
 
-Solo caminan por la superficie albañiles, electricistas y plomeros pasando presupuestos carísimos.
+Los sobrevivientes han pasado su conciencia al mundo virtual como forma de ser eficientes ante las IAs.
 
-Tras la expansión de las grandes inteligencias artificiales, los últimos humanos libres sobrevivieron transfiriendo sus conciencias a redes menores, sistemas olvidados y hardware obsoleto.
+Año 2051.
 
 Internet cayó.
 La nube cayó.
 Los satélites callaron.
 
-Pero en el Sudoeste Bonaerense, una red de nodos LoRa siguió transmitiendo.
+Tras la expansión de la IA, el ser humano se volvió obsoleto. La IA decidió desconectarnos.
+
+En un último movimiento desesperado, algunos humanos lograron sobrevivir transfiriendo sus conciencias a redes menores, sistemas olvidados y hardware obsoleto.
+
+En el Sudoeste Bonaerense, una red de nodos LoRa sobrevivió desconectada del resto del mundo, los sobrevivientes de esta región decidieron adoptarlo como su nuevo hogar.
 
 La llamaron la Mesh.
 
-De sus rutas, paquetes perdidos y memorias digitales surgió una sustancia extraña: la Lucaína-T. Energía, droga y combustible para las conciencias binarias.
+De sus rutas, paquetes perdidos y memorias digitales surgió una sustancia extraña: la Lucaína-T. Energía, droga y combustible para las conciencias digitales.
 
-Ahora cuatro facciones luchan por controlar la red.
+Pero la Mesh no está en paz.
 
-Los Viejos del Éter buscan orden.
-El Círculo DX busca expansión.
-Los Fundadores Corruptos buscan Lucaína-T.
-Los Custodios del BBS buscan preservar lo último que queda de la humanidad.
+Cuatro facciones luchan por controlarla.
+
+Los Viejos RCBB buscan orden en el éter. (jugador Marrón)
+
+El Círculo DX, codicioso, busca expansión. (jugador Rojo)
+
+Los Fundadores de Meshtastic, hoy corrompidos por los vicios, buscan saciar su abstinencia con Lucaína-T. (Jugador Verde)
+
+Los Custodios del BBS buscan preservar lo último que queda de la humanidad: Este es tu rol. Esta es tu misión. (Jugador Azul)
 
 La señal está abierta.
 La guerra comenzó.`;
@@ -788,9 +836,11 @@ function runCensusFlash(
 // ── init ──────────────────────────────────────────────────────────────────────
 
 function initGame(nodes: MeshNode[]): GameState {
-  const active = nodes.filter(n =>
-    n.lat != null && n.lon != null && (n.last_seen_mins_ago ?? 999) <= ACTIVE_MINS
-  );
+  const active = nodes.filter(n => {
+    if (n.lat == null || n.lon == null) return false;
+    const name = n.long_name ?? n.short_name ?? n.node_id;
+    return isInfraNode(name) || (n.last_seen_mins_ago ?? 999) <= ACTIVE_MINS;
+  });
   if (!active.length) return {
     cells: {}, bridges: [], islands: [], phase: "action", turn: 1,
     reinforcementsLeft: 0, attackTarget: null, attackSource: null, moveSource: null, postConquestTroops: 0,
@@ -897,6 +947,139 @@ function statusText(gs: GameState): [string, string] {
   }
 }
 
+// ── tutorial ──────────────────────────────────────────────────────────────────
+
+const TUTORIAL_SLIDES = [
+  {
+    icon: "🎯",
+    color: "#00e5ff",
+    title: "OBJETIVO",
+    body: "Sos los Custodios del BBS (azul). Tu misión: conquistar TODOS los territorios de la Mesh.\n\nEl juego termina cuando una facción controla el 100% del mapa.",
+    tip: "Controlá los nodos de infraestructura (★) — producen tropas extra.",
+  },
+  {
+    icon: "⚡",
+    color: "#ffcc00",
+    title: "TU TURNO",
+    body: "Cada turno tiene dos fases:\n\n1. REFUERZO — colocás tropas nuevas en tus territorios. Más territorios = más refuerzos.\n\n2. ACCIÓN — atacás un enemigo, movés tropas entre tus territorios, o pasás.",
+    tip: "Podés hacer solo una acción por turno (atacar O mover).",
+  },
+  {
+    icon: "⚔",
+    color: "#ff3355",
+    title: "COMBATE",
+    body: "Para atacar necesitás al menos 2 tropas en tu territorio. Se tiran dados ronda a ronda: el que saca más gana la ronda y el rival pierde 1 tropa.\n\nEl combate para cuando alguien queda en 0. Si ganás, conquistás el territorio.",
+    tip: "Tener más tropas que el defensor aumenta mucho tus chances.",
+  },
+  {
+    icon: "🃏",
+    color: "#aa00ff",
+    title: "CARTAS & PRODUCCIÓN",
+    body: "Conquistar un territorio te da una carta. Juntá 3 cartas del mismo tipo y canjeálas por tropas extra al inicio del turno.\n\nCada ciertos turnos ocurre la Producción de Lucaína-T: los nodos de infraestructura (★) duplican sus tropas.",
+    tip: "Guardá la bomba (◉) para un momento decisivo — ataca a distancia.",
+  },
+];
+
+function tutorialContent(gs: GameState): { icon: string; color: string; title: string; desc: string; tip: string | null } | null {
+  switch (gs.phase) {
+    case "reinforcement":
+      return {
+        icon: "🛡", color: "#00e5ff",
+        title: "FASE DE REFUERZO",
+        desc: `Tenés ${gs.reinforcementsLeft} tropa${gs.reinforcementsLeft !== 1 ? "s" : ""} para colocar.\n\nHacé clic en cualquiera de tus territorios (azul) para reforzarlo. Repetí hasta agotar el stock.`,
+        tip: "Reforzá las fronteras donde más te presionan los enemigos.",
+      };
+    case "action":
+      return {
+        icon: "⚡", color: "#ffcc00",
+        title: "TU TURNO — ELEGÍ UNA ACCIÓN",
+        desc: "• ATACAR — conquistá un territorio enemigo adyacente\n• MOVER — redistribuí tropas entre tus territorios\n• PASAR — terminá tu turno sin hacer nada\n• CARTAS — canjeá 3 cartas iguales por refuerzos",
+        tip: "Conquistar un territorio te da una carta al final del turno.",
+      };
+    case "attack_target":
+      return {
+        icon: "⚔", color: "#ff3355",
+        title: "SELECCIONÁ OBJETIVO",
+        desc: "Hacé clic en un territorio ENEMIGO que sea vecino de uno tuyo.\n\nVerás los territorios posibles resaltados en el mapa.",
+        tip: "Atacá donde tenés más tropas que el defensor para maximizar chances.",
+      };
+    case "attack_source":
+      return {
+        icon: "📍", color: "#ff3355",
+        title: `ATACAR → ${gs.cells[gs.attackTarget!]?.nodeName ?? "?"}`,
+        desc: "Ahora hacé clic en TU territorio desde el que vas a lanzar el ataque.\n\nDebe ser adyacente al objetivo y tener al menos 2 tropas.",
+        tip: "Elegí el que tenga más tropas para tener ventaja.",
+      };
+    case "attack_confirm": {
+      const atk = gs.cells[gs.attackSource!]?.troops ?? 0;
+      const def = gs.cells[gs.attackTarget!]?.troops ?? 0;
+      const fav = atk > def;
+      return {
+        icon: "⚔", color: "#ff3355",
+        title: `${atk} TROPAS CONTRA ${def}`,
+        desc: `Tu territorio tiene ${atk} tropas, el enemigo tiene ${def}.\n\nSe combate ronda a ronda con dados. Cada bando pierde 1 tropa por ronda perdida.`,
+        tip: fav ? "Tenés ventaja numérica — conviene atacar." : "Estás en desventaja. Podés retirarte sin perder nada.",
+      };
+    }
+    case "post_conquest":
+      return {
+        icon: "🏆", color: "#00ff88",
+        title: "¡CONQUISTA!",
+        desc: "Ganaste el combate. Elegí cuántas tropas mover al nuevo territorio con los botones +/−.\n\nDebe quedar al menos 1 tropa en el territorio origen.",
+        tip: "Mové suficientes tropas para defender el nuevo territorio.",
+      };
+    case "move_source":
+      return {
+        icon: "↔", color: "#00e5ff",
+        title: "MOVER TROPAS — ORIGEN",
+        desc: "Hacé clic en TU territorio desde el que querés mover tropas.\n\nSolo podés mover a territorios propios adyacentes.",
+        tip: "Útil para concentrar fuerzas antes de un ataque.",
+      };
+    case "move_target":
+      return {
+        icon: "↔", color: "#00e5ff",
+        title: `DESTINO DESDE ${gs.cells[gs.moveSource!]?.nodeName ?? "?"}`,
+        desc: "Hacé clic en un territorio TUYO adyacente al origen.\n\nLas tropas se moverán de un nodo al otro.",
+        tip: "Solo podés mover a vecinos directos, no a distancia.",
+      };
+    case "move_confirm": {
+      const max = (gs.cells[gs.moveSource!]?.troops ?? 2) - 1;
+      return {
+        icon: "↔", color: "#00e5ff",
+        title: "CONFIRMAR MOVIMIENTO",
+        desc: `Elegí cuántas tropas mover (máx: ${max}) con los botones +/−.\n\nSiempre queda 1 tropa en el origen. Luego presioná MOVER.`,
+        tip: null,
+      };
+    }
+    case "bomb_target":
+      return {
+        icon: "◉", color: "#ff6600",
+        title: "ATAQUE BOMBA",
+        desc: "Canjeaste una bomba. Hacé clic en CUALQUIER territorio enemigo del mapa para lanzarla.\n\nElimina entre 1 y 3 tropas enemigas según la severidad.",
+        tip: "Ideal para debilitar un territorio fuertemente defendido antes de atacar.",
+      };
+    case "ai_turn":
+      return {
+        icon: "🤖", color: "#aa00ff",
+        title: "TURNO DE LA IA",
+        desc: "Las otras facciones están jugando. Observá en el mapa cómo se mueven y atacan.\n\nPodés presionar SALTAR para avanzar rápido al próximo turno.",
+        tip: null,
+      };
+    case "game_over":
+      return {
+        icon: gs.winner === "player" ? "🏆" : "💀",
+        color: gs.winner === "player" ? "#00ff88" : "#ff3355",
+        title: gs.winner === "player" ? "¡VICTORIA!" : "DERROTA",
+        desc: gs.winner === "player"
+          ? "¡Dominaste la Mesh! Conquistaste todos los territorios."
+          : `${NAMES[gs.winner!]} dominó la Mesh esta vez.\n\nCada partida es diferente — intentalo de nuevo.`,
+        tip: null,
+      };
+    default:
+      return null;
+  }
+}
+
 // ── component ─────────────────────────────────────────────────────────────────
 
 export default function MeshWarsView() {
@@ -906,13 +1089,19 @@ export default function MeshWarsView() {
   const [selectedCards, setSelectedCards] = useState<number[]>([]);
   const [loseAllFlash, setLoseAllFlash] = useState(false);
   const [blinkVisible, setBlinkVisible] = useState(true);
-  const [introState, setIntroState] = useState<"start" | "typing" | "done">("start");
+  const [introState, setIntroState] = useState<"start" | "typing" | "done" | "tutorial_slides">("start");
+  const [tutorialMode, setTutorialMode] = useState(false);
+  const [tutorialSlide, setTutorialSlide] = useState(0);
   const [introChars, setIntroChars] = useState(0);
   const [introCursor, setIntroCursor] = useState(true);
   const introStopRef = useRef<(() => void) | null>(null);
   const introTextRef = useRef<HTMLDivElement>(null);
   const [logLines, setLogLines]     = useState<string[]>([]);
   const logEndRef                   = useRef<HTMLDivElement>(null);
+  const logScrollRef                = useRef<HTMLDivElement>(null);
+  const rightScrollRef              = useRef<HTMLDivElement>(null);
+  const [logHasMore,   setLogHasMore]   = useState(false);
+  const [rightHasMore, setRightHasMore] = useState(false);
   const [mapZoom, setMapZoom]       = useState(12);
   const nodesRef               = useRef<MeshNode[]>([]);
   const mapRef                 = useRef<L.Map | null>(null);
@@ -1227,6 +1416,25 @@ export default function MeshWarsView() {
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logLines]);
+
+  // Detect scroll overflow for "more content" arrows
+  useEffect(() => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    const check = () => setLogHasMore(el.scrollTop + el.clientHeight < el.scrollHeight - 4);
+    check();
+    el.addEventListener("scroll", check);
+    return () => el.removeEventListener("scroll", check);
+  }, [logLines]);
+
+  useEffect(() => {
+    const el = rightScrollRef.current;
+    if (!el) return;
+    const check = () => setRightHasMore(el.scrollTop + el.clientHeight < el.scrollHeight - 4);
+    check();
+    el.addEventListener("scroll", check);
+    return () => el.removeEventListener("scroll", check);
+  });
 
   // Re-render troop markers when zoom crosses the hex-visibility threshold
   useEffect(() => {
@@ -1748,7 +1956,7 @@ export default function MeshWarsView() {
   function handleTrade(indices: number[], effectType: CardType) {
     setCardFlash(false);
     setGs(prev => {
-      if (!prev) return prev;
+      if (!prev || prev.phase !== "reinforcement") return prev;
       const newCards = prev.cards.filter((_, i) => !indices.includes(i));
       if (effectType === "bomba") {
         return {
@@ -2007,38 +2215,59 @@ export default function MeshWarsView() {
 
         {/* Random event banner */}
         {eventBanner && gs && (() => {
-          const fColor = COLORS[eventBanner.targetFaction];
-          const tColor = eventBanner.type === "POSITIVE" ? "#4caf50" : eventBanner.type === "NEGATIVE" ? "#f44336" : "#78909c";
-          const tIcon  = eventBanner.type === "POSITIVE" ? "▲" : eventBanner.type === "NEGATIVE" ? "▼" : "◆";
+          const fColor  = COLORS[eventBanner.targetFaction];
+          const tColor  = eventBanner.type === "POSITIVE" ? "#00e5ff" : eventBanner.type === "NEGATIVE" ? "#ff1744" : "#ffd740";
+          const tIcon   = eventBanner.type === "POSITIVE" ? "▲" : eventBanner.type === "NEGATIVE" ? "▼" : "◆";
+          const tLabel  = eventBanner.type === "POSITIVE" ? "EVENTO POSITIVO" : eventBanner.type === "NEGATIVE" ? "EVENTO NEGATIVO" : "EVENTO NEUTRO";
+          const sevDots = eventBanner.severity === "MINOR" ? "█ □ □" : eventBanner.severity === "MEDIUM" ? "█ █ □" : "█ █ █";
           return (
             <>
-              <div style={{ position: "absolute", inset: 0, zIndex: 1500, background: "rgba(0,0,0,0.35)" }} />
+              <div style={{ position: "absolute", inset: 0, zIndex: 1500, background: "rgba(0,0,0,0.55)" }} onClick={() => setEventBanner(null)} />
               <div style={{
                 position: "absolute", top: "18%", left: "50%", transform: "translateX(-50%)",
-                zIndex: 1600, background: "#0d1117", border: `2px solid ${fColor}`,
-                borderRadius: 14, padding: "22px 28px", minWidth: 360, maxWidth: 480,
-                boxShadow: `0 0 40px ${fColor}55`, fontFamily: "monospace",
+                zIndex: 1600, background: "#060d14",
+                border: `1px solid ${tColor}`,
+                borderTop: `3px solid ${tColor}`,
+                borderRadius: 3, padding: 0, minWidth: 380, maxWidth: 500,
+                boxShadow: `0 0 30px ${tColor}44, 0 0 80px ${tColor}18, inset 0 0 40px rgba(0,0,0,0.6)`,
+                fontFamily: "monospace", overflow: "hidden",
               }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                  <span style={{ fontSize: 22, color: tColor, lineHeight: 1 }}>{tIcon}</span>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", letterSpacing: 1 }}>
-                      {eventBanner.title.toUpperCase()}
-                    </div>
-                    <div style={{ fontSize: 10, color: fColor, marginTop: 3, letterSpacing: 1 }}>
-                      {NAMES[eventBanner.targetFaction]} · {eventBanner.severity}
+                {/* Header */}
+                <div style={{
+                  background: `linear-gradient(90deg, ${tColor}25 0%, ${tColor}06 100%)`,
+                  borderBottom: `1px solid ${tColor}44`,
+                  padding: "10px 16px",
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 17, color: tColor, lineHeight: 1, textShadow: `0 0 14px ${tColor}` }}>{tIcon}</span>
+                    <span style={{ fontSize: 10, color: tColor, letterSpacing: 3, fontWeight: 700, textShadow: `0 0 8px ${tColor}` }}>{tLabel}</span>
+                  </div>
+                  <span style={{ fontSize: 12, color: tColor, letterSpacing: 1, opacity: 0.75, textShadow: `0 0 6px ${tColor}` }}>{sevDots}</span>
+                </div>
+                {/* Body */}
+                <div style={{ padding: "16px 20px 20px" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
+                    <div style={{
+                      width: 3, alignSelf: "stretch", flexShrink: 0,
+                      background: fColor, boxShadow: `0 0 10px ${fColor}`, borderRadius: 2,
+                    }} />
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", letterSpacing: 2, textShadow: "0 0 10px rgba(255,255,255,0.35)" }}>
+                        {eventBanner.title.toUpperCase()}
+                      </div>
+                      <div style={{ fontSize: 10, color: fColor, marginTop: 4, letterSpacing: 2, textShadow: `0 0 6px ${fColor}` }}>
+                        {NAMES[eventBanner.targetFaction].toUpperCase()}
+                      </div>
                     </div>
                   </div>
+                  <p style={{ color: "#b8cfe0", fontSize: 13, lineHeight: 1.75, margin: "0 0 18px", paddingLeft: 15 }}>
+                    {eventBanner.description}
+                  </p>
+                  <button onClick={() => setEventBanner(null)} style={{ ...btnStyle(tColor), width: "100%", fontSize: 12, padding: "9px" }}>
+                    ENTENDIDO
+                  </button>
                 </div>
-                <p style={{ color: "#90a4ae", fontSize: 13, lineHeight: 1.75, margin: "0 0 18px" }}>
-                  {eventBanner.description}
-                </p>
-                <button
-                  onClick={() => setEventBanner(null)}
-                  style={{ ...btnStyle(fColor), width: "100%", fontSize: 13, padding: "10px" }}
-                >
-                  ENTENDIDO
-                </button>
               </div>
             </>
           );
@@ -2057,17 +2286,121 @@ export default function MeshWarsView() {
               {nodesReady ? "Datos de la mesh cargados" : "Cargando nodos..."}
             </div>
             {nodesReady && (
-              <button style={btnStyle("#c62828")} onClick={() => {
-                introStopRef.current = startIntroMusic();
-                setIntroChars(0);
-                setIntroState("typing");
-              }}>⚔ COMENZAR PARTIDA</button>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+                <button style={btnStyle("#c62828")} onClick={() => {
+                  setTutorialMode(false);
+                  introStopRef.current = startIntroMusic();
+                  setIntroChars(0);
+                  setIntroState("typing");
+                }}>⚔ COMENZAR PARTIDA</button>
+                <button style={btnStyle("#00e5ff")} onClick={() => {
+                  setTutorialMode(true);
+                  setTutorialSlide(0);
+                  introStopRef.current = startIntroMusic();
+                  setIntroChars(0);
+                  setIntroState("typing");
+                }}>📖 JUGAR CON GUÍA</button>
+              </div>
             )}
           </div>
         )}
 
+        {/* Tutorial slides */}
+        {!gs && introState === "tutorial_slides" && (() => {
+          const slide = TUTORIAL_SLIDES[tutorialSlide];
+          const isLast = tutorialSlide === TUTORIAL_SLIDES.length - 1;
+          return (
+            <div style={{
+              position: "absolute", inset: 0, zIndex: 2000,
+              background: "rgba(0,0,0,0.88)",
+              display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center",
+              padding: "40px 10%", boxSizing: "border-box",
+            }}>
+              {/* Slide card */}
+              <div style={{
+                background: "#06090f",
+                border: `1px solid ${slide.color}`,
+                borderTop: `3px solid ${slide.color}`,
+                borderRadius: 4,
+                padding: "32px 36px",
+                maxWidth: 560, width: "100%",
+                boxShadow: `0 0 40px ${slide.color}33`,
+                fontFamily: "monospace",
+              }}>
+                {/* Header */}
+                <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
+                  <span style={{ fontSize: 40, lineHeight: 1 }}>{slide.icon}</span>
+                  <div>
+                    <div style={{ fontSize: 11, color: slide.color, letterSpacing: 3, fontWeight: 700, textShadow: `0 0 8px ${slide.color}` }}>
+                      PASO {tutorialSlide + 1} / {TUTORIAL_SLIDES.length}
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: "#fff", letterSpacing: 2, marginTop: 2, textShadow: "0 0 10px rgba(255,255,255,0.3)" }}>
+                      {slide.title}
+                    </div>
+                  </div>
+                </div>
+                {/* Body */}
+                <div style={{ color: "#b8cfe0", fontSize: 14, lineHeight: 1.8, whiteSpace: "pre-line", marginBottom: 20 }}>
+                  {slide.body}
+                </div>
+                {/* Tip */}
+                {slide.tip && (
+                  <div style={{
+                    background: `${slide.color}0d`, border: `1px solid ${slide.color}44`,
+                    borderRadius: 2, padding: "8px 12px",
+                    color: slide.color, fontSize: 12, letterSpacing: 1,
+                    textShadow: `0 0 6px ${slide.color}66`,
+                    marginBottom: 24,
+                  }}>
+                    💡 {slide.tip}
+                  </div>
+                )}
+                {/* Navigation */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <button
+                    onClick={() => setTutorialSlide(s => s - 1)}
+                    disabled={tutorialSlide === 0}
+                    style={{
+                      ...btnStyle("#4a6a7a", tutorialSlide === 0),
+                      minWidth: 100, fontSize: 12, padding: "8px 16px",
+                    }}
+                  >← ANTERIOR</button>
+                  {/* Dots */}
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {TUTORIAL_SLIDES.map((_, i) => (
+                      <div key={i} onClick={() => setTutorialSlide(i)} style={{
+                        width: 8, height: 8, borderRadius: "50%", cursor: "pointer",
+                        background: i === tutorialSlide ? slide.color : "#1a3040",
+                        boxShadow: i === tutorialSlide ? `0 0 6px ${slide.color}` : "none",
+                        transition: "background 0.2s",
+                      }} />
+                    ))}
+                  </div>
+                  {isLast ? (
+                    <button
+                      onClick={() => {
+                        introStopRef.current?.();
+                        introStopRef.current = null;
+                        setIntroState("start");
+                        startGame();
+                      }}
+                      style={{ ...btnStyle("#c62828"), minWidth: 100, fontSize: 12, padding: "8px 16px" }}
+                    >⚔ JUGAR</button>
+                  ) : (
+                    <button
+                      onClick={() => setTutorialSlide(s => s + 1)}
+                      style={{ ...btnStyle(slide.color), minWidth: 100, fontSize: 12, padding: "8px 16px" }}
+                    >SIGUIENTE →</button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Intro typewriter screen */}
-        {!gs && introState !== "start" && (
+        {!gs && introState !== "start" && introState !== "tutorial_slides" && (
           <div style={{
             position: "absolute", inset: 0, zIndex: 2000,
             background: "#000",
@@ -2107,12 +2440,17 @@ export default function MeshWarsView() {
               <button
                 style={{ ...btnStyle("#c62828"), position: "absolute", bottom: 40, left: "50%", transform: "translateX(-50%)" }}
                 onClick={() => {
-                  introStopRef.current?.();
-                  introStopRef.current = null;
-                  setIntroState("start");
-                  startGame();
+                  if (tutorialMode) {
+                    setTutorialSlide(0);
+                    setIntroState("tutorial_slides");
+                  } else {
+                    introStopRef.current?.();
+                    introStopRef.current = null;
+                    setIntroState("start");
+                    startGame();
+                  }
                 }}
-              >⚔ INICIAR LA GUERRA</button>
+              >{tutorialMode ? "📖 VER GUÍA →" : "⚔ INICIAR LA GUERRA"}</button>
             )}
           </div>
         )}
@@ -2134,7 +2472,7 @@ export default function MeshWarsView() {
           width: "33%", height: "100%",
           borderRight: "1px solid #0a1828",
           display: "flex", flexDirection: "column", padding: "10px 0 6px 12px",
-          boxSizing: "border-box", background: "#060e18",
+          boxSizing: "border-box", background: "#060e18", position: "relative",
         }}>
           {/* Panel label */}
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexShrink: 0, paddingRight: 10 }}>
@@ -2160,7 +2498,7 @@ export default function MeshWarsView() {
             </div>
           )}
           {gs ? (
-            <div style={{ height: 0, flex: 1, overflowY: "scroll", overflowX: "hidden", paddingRight: 6 }}>
+            <div ref={logScrollRef} style={{ height: 0, flex: 1, overflowY: "scroll", overflowX: "hidden", paddingRight: 6, paddingBottom: 14 }}>
               {logLines.map((line, i) => {
                 const isSep = line.startsWith("──");
                 return (
@@ -2185,6 +2523,16 @@ export default function MeshWarsView() {
             </div>
           ) : (
             <div style={{ color: "#0d2030", fontFamily: "monospace", fontSize: 13, margin: "auto" }}>MESH WARS</div>
+          )}
+          {logHasMore && (
+            <div style={{
+              position: "absolute", bottom: 0, left: 0, right: 0,
+              height: 28, pointerEvents: "none",
+              background: "linear-gradient(transparent, #060e18)",
+              display: "flex", alignItems: "flex-end", justifyContent: "center", paddingBottom: 3,
+            }}>
+              <span style={{ color: "#00e5ff", fontSize: 12, animation: "mw-blink 0.8s step-end infinite", textShadow: "0 0 8px #00e5ff" }}>▼</span>
+            </div>
           )}
         </div>
 
@@ -2247,15 +2595,11 @@ export default function MeshWarsView() {
         </div>
 
         {/* Right: card flash or combat info */}
-        <div style={{
-          flex: 1, padding: "10px 16px", display: "flex", flexDirection: "column",
+        <div ref={rightScrollRef} style={{
+          flex: 1, padding: "10px 16px 22px", display: "flex", flexDirection: "column",
           justifyContent: "flex-start", overflowY: "auto", background: "#080612",
+          position: "relative",
         }}>
-          {/* Panel header */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexShrink: 0 }}>
-            <span style={{ color: "#ff6600", fontFamily: "monospace", fontSize: 9, letterSpacing: 3, fontWeight: 700 }}>[ MESH ]</span>
-            <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg, #ff660055, transparent)" }} />
-          </div>
           {gs?.pendingCard ? (
             /* ── Discard chooser (hand was full) ── */
             <>
@@ -2400,12 +2744,15 @@ export default function MeshWarsView() {
                   {selectionEffect ? (() => {
                     const bonus   = troopBonus(selectionEffect);
                     const em      = CARD_META[selectionEffect];
-                    const enabled = bonus > 0 || selectionEffect === "bomba";
-                    const label   = bonus > 0
-                      ? `+${bonus} tropas al refuerzo`
-                      : selectionEffect === "bomba"
-                        ? `${em.symbol} ATAQUE BOMBA — elegí objetivo`
-                        : `${em.label} — próximamente`;
+                    const canTrade = gs?.phase === "reinforcement";
+                    const enabled = canTrade && (bonus > 0 || selectionEffect === "bomba");
+                    const label   = !canTrade
+                      ? "Solo canjeás al inicio del turno"
+                      : bonus > 0
+                        ? `+${bonus} tropas al refuerzo`
+                        : selectionEffect === "bomba"
+                          ? `${em.symbol} ATAQUE BOMBA — elegí objetivo`
+                          : `${em.label} — próximamente`;
                     return (
                       <>
                         <span style={{ color: em.color, fontFamily: "monospace", fontSize: 12 }}>{label}</span>
@@ -2438,7 +2785,46 @@ export default function MeshWarsView() {
                 </div>
               )}
             </>
-          ) : gs?.combatMsg ? (
+          ) : gs && tutorialMode && tutorialContent(gs) ? (() => {
+            const tc = tutorialContent(gs)!;
+            return (
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                {/* Icon + title */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontSize: 28, lineHeight: 1 }}>{tc.icon}</span>
+                  <div style={{
+                    fontSize: 14, fontWeight: 800, color: tc.color, letterSpacing: 2,
+                    textShadow: `0 0 10px ${tc.color}88`,
+                  }}>{tc.title}</div>
+                </div>
+                {/* Description */}
+                <div style={{
+                  color: "#c0d8e8", fontSize: 12, lineHeight: 1.75,
+                  whiteSpace: "pre-line", flex: 1,
+                }}>
+                  {tc.desc}
+                </div>
+                {/* Tip */}
+                {tc.tip && (
+                  <div style={{
+                    marginTop: 8, marginBottom: 4,
+                    background: `${tc.color}0d`, border: `1px solid ${tc.color}33`,
+                    borderRadius: 2, padding: "6px 10px",
+                    color: tc.color, fontSize: 11, letterSpacing: 1,
+                    textShadow: `0 0 6px ${tc.color}55`,
+                  }}>
+                    💡 {tc.tip}
+                  </div>
+                )}
+                {/* combatMsg below guide if present */}
+                {gs.combatMsg ? (
+                  <div style={{ color: "#ffcc00", fontFamily: "monospace", fontSize: 13, fontWeight: 700, marginTop: 6, textShadow: "0 0 8px #ffcc0055" }}>
+                    {gs.combatMsg}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })() : gs?.combatMsg ? (
             <div style={{ color: "#ffcc00", fontFamily: "monospace", fontSize: 15, fontWeight: 700, marginBottom: 4, textShadow: "0 0 8px #ffcc0055" }}>
               {gs.combatMsg}
             </div>
@@ -2450,6 +2836,16 @@ export default function MeshWarsView() {
           {!cardFlash && gs?.phase === "attack_confirm" && gs.attackSource && gs.attackTarget && (
             <div style={{ color: "#ff3355", fontFamily: "monospace", fontSize: 14, marginTop: 4, letterSpacing: 2, textShadow: "0 0 8px #ff335566" }}>
               {gs.cells[gs.attackSource].troops} CONTRA {gs.cells[gs.attackTarget].troops}
+            </div>
+          )}
+          {rightHasMore && (
+            <div style={{
+              position: "sticky", bottom: 0,
+              height: 28, pointerEvents: "none", marginTop: "auto",
+              background: "linear-gradient(transparent, #080612)",
+              display: "flex", alignItems: "flex-end", justifyContent: "center", paddingBottom: 3,
+            }}>
+              <span style={{ color: "#ff6600", fontSize: 12, animation: "mw-blink 0.8s step-end infinite", textShadow: "0 0 8px #ff6600" }}>▼</span>
             </div>
           )}
         </div>
