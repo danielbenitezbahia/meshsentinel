@@ -20,8 +20,8 @@ export function pickReinforcementPool(
     const weakEnemies = enemies.filter(id => (cells[id]?.troops ?? 99) <= 2).length;
     const infraBonus  = (cell.isProduction || cell.isNodeActive) ? 2 : 0;
     const islBonus    = islandReinfBonus(cell.h3Index, faction, cells, islands);
-    const contBonus   = continentReinfBonus(cell.h3Index, priority);
-    const weight      = enemies.length * 2 + weakEnemies + infraBonus + islBonus + contBonus;
+    const contBonus   = continentReinfBonus(cell.h3Index, faction, priority, cells, bridges);
+    const weight      = enemies.length * 2 + weakEnemies + infraBonus + islBonus + contBonus + Math.floor(cell.troops / 2);
     for (let i = 0; i < weight; i++) pool.push(cell.h3Index);
   }
   return pool.length > 0 ? pool : owned.map(c => c.h3Index);

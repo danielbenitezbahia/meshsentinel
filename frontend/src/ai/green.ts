@@ -36,7 +36,8 @@ export function pickReinforcementPool(
       else if (onBorder)       weight = 1;
     }
     weight += islandReinfBonus(cell.h3Index, faction, cells, islands);
-    weight += continentReinfBonus(cell.h3Index, getPriorityIsland(faction, cells, islands));
+    weight += continentReinfBonus(cell.h3Index, faction, getPriorityIsland(faction, cells, islands), cells, bridges);
+    weight += Math.floor(cell.troops / 2);
     for (let i = 0; i < weight; i++) pool.push(cell.h3Index);
   }
   return pool.length > 0 ? pool : owned.map(c => c.h3Index);

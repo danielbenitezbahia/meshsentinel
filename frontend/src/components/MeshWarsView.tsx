@@ -573,7 +573,7 @@ function planAITurns(
       if (won) wonThisPhase[faction] = true;
       c = won
         ? { ...c, [from]: { ...c[from], troops: 1 }, [to]: { ...c[to], owner: faction, troops: Math.max(1, atk - 1) } }
-        : { ...c, [from]: { ...c[from], troops: atk } };
+        : { ...c, [from]: { ...c[from], troops: atk }, [to]: { ...c[to], troops: def } };
       events.push({ type: "attack_result", fromId: from, toId: to, won, fromTroops: c[from].troops, toTroops: c[to].troops, newOwner: won ? faction : null });
     }
     factionCells[faction] = { ...c };

@@ -41,12 +41,22 @@ export function continentAttackBonus(
   return priority.complete ? 4 : 12;
 }
 
+// Bonus de refuerzo para celdas dentro del continente objetivo.
+// Máximo cuando la celda mira un enemigo dentro de la propia isla (frente de avance real).
+// Bonus reducido si está en la isla pero el enemigo adyacente está fuera de ella.
 export function continentReinfBonus(
   cellId: string,
+  faction: Faction,
   priority: { island: string[]; pct: number; complete: boolean } | null,
+  cells: Record<string, GameCell>,
+  bridges: Bridge[],
 ): number {
   if (!priority || !priority.island.includes(cellId)) return 0;
-  return priority.complete ? 2 : 5;
+  if (priority.complete) return 2;
+  const islandSet = new Set(priority.island);
+  const nbs = cellNeighbors(cellId, cells, bridges);
+  const facingIslandEnemy = nbs.some(nb => islandSet.has(nb) && cells[nb]?.owner !== faction);
+  return facingIslandEnemy ? 8 : 3;
 }
 
 // Bonus para atacar celdas en islas enemigas completas o casi completas

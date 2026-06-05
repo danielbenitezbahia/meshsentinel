@@ -18,8 +18,8 @@ export function pickReinforcementPool(
     if (enemyCount === 0) continue;
     const infraBonus = (cell.isProduction || cell.isNodeActive) ? 3 : 0;
     const islBonus   = islandReinfBonus(cell.h3Index, faction, cells, islands);
-    const contBonus  = continentReinfBonus(cell.h3Index, getPriorityIsland(faction, cells, islands));
-    const weight     = enemyCount * 2 + infraBonus + islBonus + contBonus;
+    const contBonus  = continentReinfBonus(cell.h3Index, faction, getPriorityIsland(faction, cells, islands), cells, bridges);
+    const weight     = enemyCount * 2 + infraBonus + islBonus + contBonus + Math.floor(cell.troops / 2);
     for (let i = 0; i < weight; i++) pool.push(cell.h3Index);
   }
   return pool.length > 0 ? pool : owned.map(c => c.h3Index);
