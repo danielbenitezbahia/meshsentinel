@@ -13,13 +13,12 @@ def display_menu():
         "1. who  (últimos 12)\n"
         "2. top  (más visitas)\n"
         "3. seen (te pide !id)\n"
+        "4. ↩ Volver\n"
         "\n"
         "También podés escribir:\n"
         "- who [N]\n"
         "- top [N]\n"
         "- seen !id\n"
-        "\n"
-        "Para volver: 'cd ..'\n"
     )
 
 
@@ -49,6 +48,9 @@ def process_command(user_id, command, bbs_system):
 
     if cmd in ("", "menu", "help", "ayuda", "?"):
         return display_menu()
+
+    if cmd == "4":
+        return "__back__"
 
     # Accesos por número (más cómodo desde Android)
     if cmd == "1":

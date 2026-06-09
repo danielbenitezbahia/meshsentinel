@@ -1,13 +1,12 @@
 menu_name = "Escape Room"  # Required for module loading
 
 def display_menu():
-    # Display the introduction and instructions for the Escape Room game
     return (
         "¡Bienvenido al Escape Room!\n"
         "Estás encerrado en una habitación.\n"
         "Explorá el entorno, resolvé acertijos y escapá.\n"
         "Comandos: norte, sur, este, oeste, examinar, recoger, usar.\n"
-        "'cd ..' para volver al menú principal."
+        "0. ↩ Volver"
     )
 
 def init_game():
@@ -68,10 +67,8 @@ def process_command(user_id, command, bbs_system):
 
     game = user_state["escape_room"]
 
-    # Return to the main menu if the user types 'cd ..'
-    if command.strip().lower() == "cd ..":
-        bbs_system.users[user_id]["menu"].pop()
-        return bbs_system.display_menu(user_id)
+    if command.strip() == "0" or command.strip().lower() == "cd ..":
+        return "__back__"
 
     # Normalize command input and parse the action and target
     parts = command.strip().lower().replace("go ", "").replace("move ", "").split(" ", 1)

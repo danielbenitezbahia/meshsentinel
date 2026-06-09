@@ -1,7 +1,7 @@
 menu_name = "ZORK"
 
 def display_menu():
-    return "Welcome to Zork!\n1. Start Game\n'cd ..' to return to the main menu."
+    return "Welcome to Zork!\n1. Start Game\n2. ↩ Volver"
 
 def init_game():
     return {
@@ -19,17 +19,15 @@ def process_command(user_id, command, bbs_system):
         if command == "1":
             user_state["zork_game"] = init_game()
             return handle_field(user_state["zork_game"])
-        elif command.strip().lower() == "cd ..":
-            bbs_system.users[user_id]["menu"].pop()
-            return bbs_system.display_menu(user_id)
+        elif command.strip() == "2" or command.strip().lower() == "cd ..":
+            return "__back__"
         else:
-            return "Invalid choice. Enter '1' to start the game or 'cd ..' to exit."
+            return "Invalid choice. Enter '1' para jugar o '2' para volver."
 
     game = user_state["zork_game"]
 
     if command.strip().lower() == "cd ..":
-        bbs_system.users[user_id]["menu"].pop()
-        return bbs_system.display_menu(user_id)
+        return "__back__"
 
     if command.strip().lower() == "help":
         return "Available commands depend on your location. Try looking around or moving in a direction.\nExamples: 'look', 'go east', 'open mailbox'."

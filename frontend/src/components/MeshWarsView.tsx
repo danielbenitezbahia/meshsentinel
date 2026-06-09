@@ -837,6 +837,116 @@ function runBombFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
   setTimeout(() => poly.setStyle(saved), BLINKS * PERIOD + 50);
 }
 
+// Defender: full-cell red fill flash (soft/blurred effect)
+function runRoundFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
+  const poly = polygons.get(cellId);
+  if (!poly) return;
+  const saved = {
+    fillColor:   (poly.options as any).fillColor   as string,
+    fillOpacity: (poly.options as any).fillOpacity as number,
+    color:       (poly.options as any).color       as string,
+    weight:      (poly.options as any).weight      as number,
+  };
+  poly.setStyle({ fillColor: "#ff1744", fillOpacity: 0.88, color: "#ff1744", weight: 1.5 });
+  setTimeout(() => poly.setStyle(saved), 220);
+}
+
+// Animated chevron arrow. Listens to map move/zoom to stay in sync during fly animations.
+function runAttackArrow(
+  fromId: string,
+  toId: string,
+  map: L.Map,
+  container: HTMLDivElement,
+): HTMLElement {
+  const [fLat, fLon] = cellToLatLng(fromId);
+  const [tLat, tLon] = cellToLatLng(toId);
+  const ns = (tag: string) => document.createElementNS("http://www.w3.org/2000/svg", tag);
+
+  const H = 4, W = 5, SW = 2.5, STEP = 20, MAX_CH = 22;
+  const clipId = `mwac${Date.now()}`;
+
+  // Build static SVG structure once; only update positional attributes on move
+  const svg    = ns("svg") as SVGSVGElement;
+  Object.assign((svg as unknown as HTMLElement).style, {
+    position: "absolute", top: "0", left: "0",
+    width: "100%", height: "100%",
+    pointerEvents: "none", zIndex: "500", overflow: "visible",
+  });
+
+  const defs   = ns("defs");
+  const clip   = ns("clipPath"); clip.setAttribute("id", clipId);
+  const cRect  = ns("rect") as SVGRectElement;
+  cRect.setAttribute("y",      `${-H - SW}`);
+  cRect.setAttribute("height", `${(H + SW) * 2}`);
+  clip.appendChild(cRect); defs.appendChild(clip); svg.appendChild(defs);
+
+  const bgLine = ns("line") as SVGLineElement;
+  bgLine.setAttribute("stroke",         "#ffffff");
+  bgLine.setAttribute("stroke-width",   `${H * 2 + 2}`);
+  bgLine.setAttribute("opacity",        "0.13");
+  bgLine.setAttribute("stroke-linecap", "round");
+  svg.appendChild(bgLine);
+
+  const outerG    = ns("g") as SVGGElement;
+  const clipG     = ns("g") as SVGGElement; clipG.setAttribute("clip-path", `url(#${clipId})`);
+  const animG     = ns("g") as SVGGElement;
+  const anim      = ns("animateTransform");
+  anim.setAttribute("attributeName", "transform");
+  anim.setAttribute("type",          "translate");
+  anim.setAttribute("from",          "0 0");
+  anim.setAttribute("to",            `-${STEP} 0`);
+  anim.setAttribute("dur",           "0.45s");
+  anim.setAttribute("repeatCount",   "indefinite");
+  animG.appendChild(anim);
+
+  const chevs: SVGPathElement[] = [];
+  for (let i = 0; i < MAX_CH; i++) {
+    const p = ns("path") as SVGPathElement;
+    p.setAttribute("fill",             "none");
+    p.setAttribute("stroke",           "#ffffff");
+    p.setAttribute("stroke-width",     `${SW}`);
+    p.setAttribute("stroke-linecap",   "butt");
+    p.setAttribute("stroke-linejoin",  "miter");
+    p.setAttribute("stroke-miterlimit","12");
+    p.setAttribute("opacity",          "0.92");
+    animG.appendChild(p); chevs.push(p);
+  }
+  clipG.appendChild(animG); outerG.appendChild(clipG); svg.appendChild(outerG);
+
+  function render() {
+    const fp   = map.latLngToContainerPoint([fLat, fLon]);
+    const tp   = map.latLngToContainerPoint([tLat, tLon]);
+    const dx   = tp.x - fp.x, dy = tp.y - fp.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const ang  = Math.atan2(dy, dx) * 180 / Math.PI;
+    const numCh = Math.ceil(dist / STEP) + 2;
+
+    bgLine.setAttribute("x1", `${fp.x}`); bgLine.setAttribute("y1", `${fp.y}`);
+    bgLine.setAttribute("x2", `${tp.x}`); bgLine.setAttribute("y2", `${tp.y}`);
+    outerG.setAttribute("transform", `translate(${fp.x},${fp.y}) rotate(${ang})`);
+    cRect.setAttribute("x",     "0");
+    cRect.setAttribute("width", `${dist}`);
+
+    for (let i = 0; i < MAX_CH; i++) {
+      if (i <= numCh) {
+        const x = (i - 1) * STEP;
+        chevs[i].setAttribute("d", `M${x - W} ${-H} L${x} 0 L${x - W} ${H}`);
+        chevs[i].removeAttribute("display");
+      } else {
+        chevs[i].setAttribute("display", "none");
+      }
+    }
+  }
+
+  render();
+  map.on("move",    render);
+  map.on("zoomend", render);
+  (svg as any)._cleanup = () => { map.off("move", render); map.off("zoomend", render); };
+
+  container.appendChild(svg as unknown as HTMLElement);
+  return svg as unknown as HTMLElement;
+}
+
 function runProductionFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
   const poly = polygons.get(cellId);
   if (!poly) return;
@@ -1203,6 +1313,7 @@ export default function MeshWarsView() {
   const infraRingsRef          = useRef<L.Polygon[]>([]);
   const troopMarkersRef        = useRef<Map<string, L.Marker>>(new Map());
   const bridgeLinesRef         = useRef<L.Polyline[]>([]);
+  const attackOverlayRef       = useRef<HTMLElement | null>(null);
   const gsRef                  = useRef<GameState | null>(null);
   const fittedRef              = useRef(false);
   const aiTimerRef             = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1223,8 +1334,16 @@ export default function MeshWarsView() {
     const event = gs.aiQueue[0];
 
     // Immediate side effects (sound + map pan)
-    if (event.type === "attack_round") SFX.attack();
-    if (event.type === "attack_result") event.won ? SFX.conquest() : SFX.lose();
+    if (event.type === "attack_round") {
+      SFX.attack();
+      runRoundFlash(event.toId, polygonsRef.current);
+    }
+    if (event.type === "attack_result") {
+      event.won ? SFX.conquest() : SFX.lose();
+      (attackOverlayRef.current as any)?._cleanup?.();
+      attackOverlayRef.current?.remove();
+      attackOverlayRef.current = null;
+    }
     if (event.type === "reinforce") {
       if (mapRef.current) {
         const [lat, lon] = cellToLatLng(event.cellId);
@@ -1248,6 +1367,13 @@ export default function MeshWarsView() {
       SFX.bomb();
       if (!event.repelled) runBombFlash(event.targetId, polygonsRef.current);
       else { playTone(660, 0.1, "sine", 0.15); setTimeout(() => playTone(880, 0.15, "sine", 0.12), 100); }
+    }
+    if (event.type === "attack_announce") {
+      (attackOverlayRef.current as any)?._cleanup?.();
+      attackOverlayRef.current?.remove();
+      runRoundFlash(event.toId, polygonsRef.current);
+      if (mapRef.current && containerRef.current)
+        attackOverlayRef.current = runAttackArrow(event.fromId, event.toId, mapRef.current, containerRef.current);
     }
     if (event.type === "attack_announce" && mapRef.current) {
       const isBridgeAttack = !gridDisk(event.fromId, 1).includes(event.toId);
@@ -1838,6 +1964,15 @@ export default function MeshWarsView() {
     // One manual round of combat per click
     if (action === "attack_confirm") {
       SFX.attack();
+      if (gs?.attackSource && gs?.attackTarget) {
+        runRoundFlash(gs.attackTarget, polygonsRef.current);
+        if (mapRef.current && containerRef.current) {
+          (attackOverlayRef.current as any)?._cleanup?.();
+          attackOverlayRef.current?.remove();
+          attackOverlayRef.current = runAttackArrow(gs.attackSource, gs.attackTarget, mapRef.current, containerRef.current);
+          setTimeout(() => { (attackOverlayRef.current as any)?._cleanup?.(); attackOverlayRef.current?.remove(); attackOverlayRef.current = null; }, 520);
+        }
+      }
       setGs(prev => {
         if (!prev || !prev.attackSource || !prev.attackTarget) return prev;
         const from = prev.cells[prev.attackSource];
@@ -1986,6 +2121,8 @@ export default function MeshWarsView() {
       }
       if (action === "skip_ai") {
         if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
+        attackOverlayRef.current?.remove();
+        attackOverlayRef.current = null;
         const f = aiFinalRef.current;
         if (!f) return prev;
 

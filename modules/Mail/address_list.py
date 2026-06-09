@@ -21,12 +21,12 @@ def save_address_list(address_list):
 
 def display_menu():
     """Display the Address List menu."""
-    return "Address List Module:\n" \
-           "1. View Address List\n" \
-           "2. Add Yourself to Address List\n" \
-           "3. Remove Yourself from Address List\n" \
-           "4. Toggle Online Status\n" \
-           "'cd ..' to return to the main menu."
+    return ("Address List Module:\n"
+            "1. View Address List\n"
+            "2. Add Yourself to Address List\n"
+            "3. Remove Yourself from Address List\n"
+            "4. Toggle Online Status\n"
+            "5. ↩ Volver")
 
 def process_command(user_id, command, bbs_system):
     """Handle commands for the Address List Module."""
@@ -44,9 +44,8 @@ def process_command(user_id, command, bbs_system):
     # Load the address list from storage
     address_list = load_address_list()
 
-    if command.strip().lower() == "cd ..":
-        bbs_system.users[user_id]["menu"].pop()
-        return bbs_system.display_menu(user_id)
+    if command.strip().lower() == "cd .." or command.strip() == "5":
+        return "__back__"
 
     if state == "menu":
         if command == "1":

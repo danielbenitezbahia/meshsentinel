@@ -1,4 +1,4 @@
-import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse } from "./types";
+import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse } from "./types";
 
 export const API_BASE = "";
 
@@ -70,6 +70,30 @@ export async function fetchNodeDistance(nodeId: string): Promise<NodeDistanceRes
 
 export async function fetchStatsNodes(period: string): Promise<StatsNodesResponse> {
   const res = await fetch(`${API_BASE}/api/stats/nodes?period=${period}&limit=10`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchNodeEvents(period: string): Promise<NodeEventsResponse> {
+  const res = await fetch(`${API_BASE}/api/events/nodes?period=${period}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchActivityHeatmap(date: string): Promise<ActivityHeatmapResponse> {
+  const res = await fetch(`${API_BASE}/api/activity/heatmap?date=${date}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchActivityAlerts(): Promise<ActivityAlertsResponse> {
+  const res = await fetch(`${API_BASE}/api/activity/alerts`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchLocalities(): Promise<LocalitiesResponse> {
+  const res = await fetch(`${API_BASE}/api/activity/localities`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

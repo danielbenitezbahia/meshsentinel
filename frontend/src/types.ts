@@ -183,6 +183,82 @@ export interface StatsNodesResponse {
   private_encrypted: StatsNodeEntry[];
 }
 
+export interface NodeEvent {
+  ts: number;
+  date: string;
+  time: string;
+  mins_ago: number;
+  node_id: string;
+  name: string;
+  short_name: string | null;
+  long_name: string | null;
+  event_type: string;
+  hops: number | null;
+  snr: number | null;
+  heard_by: string | null;
+  heard_by_name: string | null;
+}
+
+export interface NodeEventsResponse {
+  events: NodeEvent[];
+  period: string;
+  since_ts: number;
+}
+
+export interface NodeEnvMetrics {
+  temperature:         number | null;
+  relative_humidity:   number | null;
+  barometric_pressure: number | null;
+  gas_resistance:      number | null;
+  voltage:             number | null;
+  current:             number | null;
+  iaq:                 number | null;
+  mins_ago:            number | null;
+}
+
+export interface LocalityNode {
+  node_id:            string;
+  name:               string;
+  last_seen_mins_ago: number | null;
+  env:                NodeEnvMetrics | null;
+}
+
+export interface Locality {
+  partido: string;
+  nodes:   LocalityNode[];
+}
+
+export interface LocalitiesResponse {
+  localities: Locality[];
+}
+
+export interface ActivityAlert {
+  node_id: string;
+  name: string;
+  gap_start: string;      // "HH:MM" en hora local Argentina
+  gap_end: string;        // "HH:MM"
+  gap_start_ts: number;
+  gap_end_ts: number;
+  duration_h: number;     // horas de ausencia
+}
+
+export interface ActivityAlertsResponse {
+  alerts: ActivityAlert[];
+  since_ts: number;
+  checked_at: number;
+}
+
+export interface ActivityHeatmapNode {
+  node_id: string;
+  name: string;
+  slots: boolean[];  // 96 booleans: slot 0 = 00:00-00:15, slot 95 = 23:45-24:00
+}
+
+export interface ActivityHeatmapResponse {
+  date: string;
+  nodes: ActivityHeatmapNode[];
+}
+
 export interface TrackDatesResponse {
   dates: string[];
 }

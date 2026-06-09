@@ -11,12 +11,12 @@ def display_menu():
         "2) Postear mensaje\n"
         "3) Leer mensaje\n"
         "4) Borrar mi mensaje\n"
+        "5) ↩ Volver\n"
         "\n"
         "Comandos directos:\n"
         "post texto...\n"
         "read 5\n"
         "delete 5\n"
-        "\ncd .. para volver"
     )
 
 
@@ -39,6 +39,9 @@ def process_command(user_id, command, bbs_system):
 
     if cmd in ("", "menu"):
         return display_menu()
+
+    if cmd == "5":
+        return "__back__"
 
     if cmd == "1":
         rows = bbs_messages.list_messages()

@@ -6,12 +6,12 @@ menu_name = "Hot Cold"  # Required for module loading
 #The goal of "Hot Cold" is to locate a hidden target location on the map using distance-based feedback such as "warmer," "colder," or "HOT!" The first player to get within 10 feet (~3 meters) of the target wins the game.
 
 def display_menu():
-    return "Welcome to Hot Cold!\n" \
-           "Set the game duration (in seconds) and find the hidden location!\n" \
-           "Use commands:\n" \
-           "1. Start 30 seconds\n" \
-           "2. Start 60 seconds\n" \
-           "'cd ..' to return to the main menu."
+    return ("Welcome to Hot Cold!\n"
+            "Set the game duration (in seconds) and find the hidden location!\n"
+            "Use commands:\n"
+            "1. Start 30 seconds\n"
+            "2. Start 60 seconds\n"
+            "3. ↩ Volver")
 
 def haversine(lat1, lon1, lat2, lon2):
     """Calculate the distance in meters between two latitude/longitude points."""
@@ -42,9 +42,8 @@ def process_command(user_id, command, bbs_system):
 
     game = user_state["hot_cold"]
 
-    if command.strip().lower() == "cd ..":
-        bbs_system.users[user_id]["menu"].pop()
-        return bbs_system.display_menu(user_id)
+    if command.strip() == "3" or command.strip().lower() == "cd ..":
+        return "__back__"
 
     if command in game["durations"]:
         duration = game["durations"][command]

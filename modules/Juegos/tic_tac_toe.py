@@ -3,10 +3,10 @@ import random
 menu_name = "Tic Tac Toe"  # Required for module loading
 
 def display_menu():
-    return "Welcome to Tic Tac Toe!\n" \
-           "1. Player vs Player\n" \
-           "2. Player vs Computer\n" \
-           "'cd ..' to return to the main menu."
+    return ("Welcome to Tic Tac Toe!\n"
+            "1. Player vs Player\n"
+            "2. Player vs Computer\n"
+            "3. ↩ Volver")
 
 def init_game(mode):
     """Initialize a new game state."""
@@ -59,11 +59,10 @@ def process_command(user_id, command, bbs_system):
         elif command == "2":
             user_state["tic_tac_toe"] = init_game("pvc")
             return f"Player vs Computer mode selected.\n\n{render_board(user_state['tic_tac_toe']['board'])}\n\nX starts. Enter 1-9 to make your move."
-        elif command.strip().lower() == "cd ..":
-            bbs_system.users[user_id]["menu"].pop()
-            return bbs_system.display_menu(user_id)
+        elif command.strip() == "3" or command.strip().lower() == "cd ..":
+            return "__back__"
         else:
-            return "Invalid choice. Enter '1' for Player vs Player, '2' for Player vs Computer, or 'cd ..' to exit."
+            return "Invalid choice. Enter '1' para PvP, '2' para PvC, '3' para volver."
 
     game = user_state["tic_tac_toe"]
 

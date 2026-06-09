@@ -25,7 +25,7 @@ def _get_api_key() -> str:
 
 
 def display_menu():
-    return "🔍 Estado de Red (IA)\nEscribí cualquier cosa para ver el diagnóstico de la red."
+    return "🔍 Estado de Red (IA)\n1. ↩ Volver\nCualquier otra entrada: diagnóstico de red."
 
 
 def _init_history_table(cur):
@@ -349,4 +349,6 @@ def _run_diagnosis(bbs_system):
 
 
 def process_command(user_id, command, bbs_system):
+    if (command or "").strip() == "1":
+        return "__back__"
     return _run_diagnosis(bbs_system)

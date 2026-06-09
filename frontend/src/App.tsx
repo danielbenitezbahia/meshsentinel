@@ -6,9 +6,10 @@ import NodePanel from "./components/NodePanel";
 import TrackView from "./components/TrackView";
 import StatsView from "./components/StatsView";
 import MeshWarsView from "./components/MeshWarsView";
+import ActivityView from "./components/ActivityView";
 import "./App.css";
 
-type View = "mesh" | "tracks" | "stats" | "wars";
+type View = "mesh" | "tracks" | "stats" | "wars" | "activity";
 
 export default function App() {
   const [view, setView] = useState<View>("mesh");
@@ -73,6 +74,12 @@ export default function App() {
           Estadísticas
         </button>
         <button
+          className={`tab ${view === "activity" ? "tab-active" : ""}`}
+          onClick={() => setView("activity")}
+        >
+          Actividad
+        </button>
+        <button
           className={`tab ${view === "wars" ? "tab-active" : ""}`}
           onClick={() => setView("wars")}
         >
@@ -86,6 +93,8 @@ export default function App() {
         <StatsView />
       ) : view === "wars" ? (
         <MeshWarsView />
+      ) : view === "activity" ? (
+        <ActivityView />
       ) : (
       <div className="app">
       <aside className="sidebar">

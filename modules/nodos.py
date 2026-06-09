@@ -15,8 +15,7 @@ def display_menu():
         "Nodos:\n"
         "1. Nodos conectados (últimos 30 min.)\n"
         "2. Nodos en movimiento hoy\n"
-        "\n"
-        "Tip: 'cd ..' para volver al menú principal."
+        "3. ↩ Volver\n"
     )
 
 
@@ -91,6 +90,9 @@ def process_command(user_id, command, bbs):
 
     if cmd in ["menu", "m", "help", "h", "?"]:
         return display_menu()
+
+    if cmd == "3":
+        return "__back__"
 
     if cmd == "2":
         rows = _get_moving_nodes_today()

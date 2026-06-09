@@ -208,13 +208,43 @@ class Interface:
                 pass
 
             if sender:
+                snr_val   = packet.get("rxSnr") or packet.get("snr")
+                hop_start = packet.get("hopStart")
+                hop_limit = packet.get("hopLimit")
+                hops_val  = (hop_start - hop_limit) if (hop_start is not None and hop_limit is not None) else None
+                relay_num = packet.get("relayNode")
+                relay_id  = f"!{relay_num:08x}" if isinstance(relay_num, int) and relay_num else None
+
                 if sender != self._own_node_id and traffic_stats.is_new_node(sender):
+                    # Resolver nombre del nodo que está escuchando directamente al nuevo
+                    heard_by_short, heard_by_long = None, None
+                    if relay_id:
+                        try:
+                            nodes = getattr(self.interface, "nodes", {}) or {}
+                            ri = nodes.get(relay_id, {})
+                            ru = ri.get("user", {}) if isinstance(ri.get("user"), dict) else {}
+                            heard_by_short = ru.get("shortName") or ri.get("shortName")
+                            heard_by_long  = ru.get("longName")  or ri.get("longName")
+                        except Exception:
+                            pass
+
                     bbs = getattr(self, "bbs", None)
                     if bbs and hasattr(bbs, "notify_new_node"):
                         try:
-                            bbs.notify_new_node(sender, short_name, long_name)
+                            bbs.notify_new_node(
+                                sender, short_name, long_name,
+                                hops=hops_val, snr=snr_val,
+                                heard_by=relay_id,
+                                heard_by_short=heard_by_short,
+                                heard_by_long=heard_by_long,
+                            )
                         except Exception:
                             logger.exception("notify_new_node failed for %s", sender)
+
+                    # Traceroute inmediato al nodo nuevo
+                    if sender not in self._traceroute_queue:
+                        self._traceroute_queue.appendleft(sender)
+                        logger.info("new node %s enqueued for immediate traceroute", sender)
 
                 traffic_stats.record_packet(
                     sender_id=sender,
@@ -225,11 +255,6 @@ class Interface:
                     is_broadcast=is_broadcast,
                     text_len=text_len
                 )
-                # Actualizar hops y SNR desde la perspectiva del BBS
-                snr_val  = packet.get("rxSnr") or packet.get("snr")
-                hop_start = packet.get("hopStart")
-                hop_limit = packet.get("hopLimit")
-                hops_val  = (hop_start - hop_limit) if (hop_start is not None and hop_limit is not None) else None
                 if snr_val is not None or hops_val is not None:
                     traffic_stats.update_node_hop_info(sender, hops_val, snr_val)
 
@@ -242,15 +267,17 @@ class Interface:
                 if not isinstance(telem, dict):
                     telem = {}
 
-                # environmentMetrics → solo BRANDSEN (para el clima del menú)
-                if sender == BRANDSEN_NODE_ID:
+                # environmentMetrics → todos los nodos
+                if sender:
                     env = telem.get("environmentMetrics") or telem.get("environment_metrics")
                     if isinstance(env, dict):
-                        bbs = getattr(self, "bbs", None)
-                        if bbs and hasattr(bbs, "update_brandsen_weather_from_telemetry"):
-                            bbs.update_brandsen_weather_from_telemetry(env)
-                            logger.info("Captured BRANDSEN env telemetry: %s", env)
-                    else:
+                        traffic_stats.record_environment_metrics(sender, env)
+                        # Brandsen también actualiza el clima del menú BBS
+                        if sender == BRANDSEN_NODE_ID:
+                            bbs = getattr(self, "bbs", None)
+                            if bbs and hasattr(bbs, "update_brandsen_weather_from_telemetry"):
+                                bbs.update_brandsen_weather_from_telemetry(env)
+                    elif sender == BRANDSEN_NODE_ID:
                         logger.info(
                             "BRANDSEN telemetry without env. telemKeys=%s telem=%s",
                             list(telem.keys()),
@@ -301,6 +328,7 @@ class Interface:
                         logger.info("POSITION_APP from %s | packetKeys=%s | relayNode=%s hopStart=%s hopLimit=%s",
                                     sender, list(packet.keys()), packet.get("relayNode"), packet.get("hopStart"), packet.get("hopLimit"))
                         traffic_stats.update_node_position(sender, lat, lon, alt)
+                        traffic_stats.update_node_partido(sender, lat, lon)
                         if sender != self._own_node_id:
                             inserted = traffic_stats.record_track_point(
                                 node_id=sender,
@@ -367,6 +395,19 @@ class Interface:
                         since = int(time.time()) - 600
                         traffic_stats.backfill_relay_node(sender, node_relay, since)
                         logger.info("backfill relay_node=%s for %s since -%ds", node_relay, sender, 600)
+                        # Actualizar heard_by en node_events si este nodo fue detectado como nuevo recientemente
+                        adjacent = path[-2]  # nodo directamente adyacente al sender en el path
+                        nb_short, nb_long = None, None
+                        try:
+                            iface_nodes = getattr(self.interface, "nodes", {}) or {}
+                            ni = iface_nodes.get(adjacent, {})
+                            nu = ni.get("user", {}) if isinstance(ni.get("user"), dict) else {}
+                            nb_short = nu.get("shortName") or ni.get("shortName")
+                            nb_long  = nu.get("longName")  or ni.get("longName")
+                        except Exception:
+                            pass
+                        if traffic_stats.update_node_event_heard_by(sender, adjacent, nb_short, nb_long):
+                            logger.info("traceroute: heard_by actualizado a %s para nodo nuevo %s", adjacent, sender)
                     logger.info("traceroute path recorded: %s (len=%d)", " → ".join(path), len(path))
                 return
 

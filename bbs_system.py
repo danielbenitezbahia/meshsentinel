@@ -41,6 +41,7 @@ BBS_WELCOME_PHRASES = [
     "Todo enlace empieza con un intento.",
 ]
 
+
 BRANDSEN_NODE_ID = "!33695e54"
 WEATHER_REFRESH_SECONDS = 15  # 30 min
 SMN_PUBLIC_CHANNEL = "SMN_Alertas"
@@ -76,7 +77,7 @@ class BBSSystem:
         self._last_short_term_run = 0
         self._last_weather_scraper_run = 0
         self._last_cleanup_run = 0
-        self._brandsen_weather = None
+        self._brandsen_weather = traffic_stats.load_brandsen_weather()
         self._last_brandsen_weather_refresh = 0
 
         self.interface.bbs = self
@@ -247,10 +248,8 @@ class BBSSystem:
         phrase = self.get_random_welcome_phrase()
 
         parts = []
-
         if weather_line:
             parts.append(weather_line)
-
         parts.append(phrase)
         parts.append("")
         parts.append(self.display_menu(user_id))
@@ -274,7 +273,13 @@ class BBSSystem:
                 if len(self.users[user_id]["menu"]) > 1:
                     self.users[user_id]["menu"].pop()
                 return self.display_menu(user_id)
-            return module.process_command(user_id, command, self)
+            result = module.process_command(user_id, command, self)
+            if result == "__back__":
+                del self.users[user_id]["module_control"]
+                if len(self.users[user_id]["menu"]) > 1:
+                    self.users[user_id]["menu"].pop()
+                return self.display_menu(user_id)
+            return result
 
         if command.strip().lower() == "top":
             self.users[user_id]["menu"] = ["main"]
@@ -316,10 +321,13 @@ class BBSSystem:
             if isinstance(menu_entry, dict) and "submodules" in menu_entry:
                 return self.display_submenu(selected_menu)
 
+            if hasattr(menu_entry, "process_command"):
+                self.users[user_id]["module_control"] = menu_entry
+
             if hasattr(menu_entry, "display_menu"):
                 return menu_entry.display_menu()
 
-            if hasattr(menu_entry, "process_command"):
+            if "module_control" in self.users[user_id]:
                 return "Entering module..."
 
             return "Invalid option."
@@ -337,6 +345,10 @@ class BBSSystem:
         try:
             command_index = int(command) - 1
             submenu_names = list(submodules.keys())
+            if command_index == len(submenu_names):
+                if len(self.users[user_id]["menu"]) > 1:
+                    self.users[user_id]["menu"].pop()
+                return self.display_menu(user_id)
             if 0 <= command_index < len(submenu_names):
                 selected_submodule = submodules[submenu_names[command_index]]
                 self.users[user_id]["module_control"] = selected_submodule
@@ -394,16 +406,37 @@ class BBSSystem:
         for index, sub_name in enumerate(submodules.keys(), start=1):
             sub_icon = self.SUBMODULE_ICONS.get(sub_name, "▸")
             lines.append(f"[{index}] {sub_icon} {sub_name}")
+        volver_num = len(submodules) + 1
+        lines.append(f"[{volver_num}] ↩ Volver")
         lines.append("> opcion:")
-        lines.append("'cd ..' volver")
         return "\n".join(lines)
 
-    def notify_new_node(self, node_id: str, short_name: str, long_name: str):
+    def notify_new_node(self, node_id: str, short_name: str, long_name: str,
+                        hops=None, snr=None,
+                        heard_by=None, heard_by_short=None, heard_by_long=None):
+        traffic_stats.record_node_event(
+            node_id=node_id,
+            short_name=short_name,
+            long_name=long_name,
+            event_type="new_node",
+            hops=hops,
+            snr=snr,
+            heard_by=heard_by,
+            heard_by_short=heard_by_short,
+            heard_by_long=heard_by_long,
+        )
+        heard_line = ""
+        if heard_by:
+            heard_name = heard_by_long or heard_by_short or heard_by
+            heard_line = f"\nEscuchado por: {heard_name}"
+        hops_line = f"\nHops: {hops}" if hops is not None else ""
         msg = (
             f"🆕 Nodo nuevo\n"
             f"Largo: {long_name or '-'}\n"
             f"Corto: {short_name or '-'}\n"
             f"ID: {node_id}"
+            f"{hops_line}"
+            f"{heard_line}"
         )
         for target in NEW_NODE_NOTIFY_NODES:
             try:
@@ -553,7 +586,7 @@ class BBSSystem:
             "updated_at": now,
             "source": BRANDSEN_NODE_ID,
         }
-
+        traffic_stats.save_brandsen_weather(self._brandsen_weather)
         logger.info("BRANDSEN weather updated: %s", self._brandsen_weather)
 
     def update_brandsen_weather_from_telemetry(self, env: dict):
@@ -583,6 +616,7 @@ class BBSSystem:
             "source": BRANDSEN_NODE_ID,
         }
         self._last_brandsen_weather_refresh = now
+        traffic_stats.save_brandsen_weather(self._brandsen_weather)
         logger.info("BRANDSEN weather updated from TELEMETRY_APP: %s", self._brandsen_weather)
 
     def format_brandsen_weather_line(self):

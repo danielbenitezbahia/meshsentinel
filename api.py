@@ -8,6 +8,7 @@ Endpoints:
   GET /api/mesh/tree/<node_id_or_name>        — árbol recursivo desde un nodo raíz
 """
 
+import calendar
 import datetime
 import json
 import math
@@ -673,6 +674,182 @@ def get_stats_nodes():
     })
 
 
+@app.get("/api/events/nodes")
+def get_node_events():
+    period = request.args.get("period", "week")
+    since  = _stats_since(period)
+    rows   = _q("""
+        SELECT ts, node_id, short_name, long_name, event_type,
+               hops, snr, heard_by, heard_by_short, heard_by_long
+        FROM node_events
+        WHERE ts >= ?
+        ORDER BY ts DESC
+    """, (since,))
+    now = int(time.time())
+    for r in rows:
+        r["date"]           = time.strftime("%Y-%m-%d", time.localtime(r["ts"]))
+        r["time"]           = time.strftime("%H:%M", time.localtime(r["ts"]))
+        r["mins_ago"]       = round((now - r["ts"]) / 60)
+        r["heard_by_name"]  = r["heard_by_long"] or r["heard_by_short"] or r["heard_by"]
+        r["name"]           = r["long_name"] or r["short_name"] or r["node_id"]
+    return jsonify({"events": rows, "period": period, "since_ts": since})
+
+
+@app.get("/api/activity/localities")
+def get_activity_localities():
+    nodes = _q("""
+        SELECT node_id, short_name, long_name, partido, lat, lon, last_seen_ts
+        FROM node_stats
+        WHERE partido IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL
+        ORDER BY partido, last_seen_ts DESC
+    """, ())
+
+    env_rows = _q("""
+        SELECT e.node_id,
+               e.temperature, e.relative_humidity, e.barometric_pressure,
+               e.gas_resistance, e.voltage, e.current, e.iaq, e.ts
+        FROM environment_metrics e
+        INNER JOIN (
+            SELECT node_id, MAX(ts) AS max_ts
+            FROM environment_metrics GROUP BY node_id
+        ) latest ON e.node_id = latest.node_id AND e.ts = latest.max_ts
+    """, ())
+    env_map = {r["node_id"]: r for r in env_rows}
+
+    partidos: dict = {}
+    now = int(time.time())
+    for node in nodes:
+        p = node["partido"]
+        if p not in partidos:
+            partidos[p] = []
+        env = env_map.get(node["node_id"])
+        partidos[p].append({
+            "node_id":      node["node_id"],
+            "name":         node["long_name"] or node["short_name"] or node["node_id"],
+            "last_seen_mins_ago": round((now - node["last_seen_ts"]) / 60) if node["last_seen_ts"] else None,
+            "env": {
+                "temperature":          env["temperature"],
+                "relative_humidity":    env["relative_humidity"],
+                "barometric_pressure":  env["barometric_pressure"],
+                "gas_resistance":       env["gas_resistance"],
+                "voltage":              env["voltage"],
+                "current":              env["current"],
+                "iaq":                  env["iaq"],
+                "mins_ago":             round((now - env["ts"]) / 60) if env["ts"] else None,
+            } if env else None,
+        })
+
+    result = [
+        {"partido": p, "nodes": [n for n in ns if n["env"] is not None]}
+        for p, ns in sorted(partidos.items())
+    ]
+    result = [r for r in result if r["nodes"]]
+    return jsonify({"localities": result})
+
+
+@app.get("/api/activity/alerts")
+def get_activity_alerts():
+    now   = int(time.time())
+    since = now - 86400  # últimas 24 horas
+
+    rows = _q("""
+        SELECT node_id, minute_ts
+        FROM node_stats_minute
+        WHERE minute_ts >= ? AND packets_total > 0
+        ORDER BY node_id, minute_ts
+    """, (since,))
+
+    node_info = {r["node_id"]: r for r in _q(
+        "SELECT node_id, short_name, long_name FROM node_stats", ()
+    )}
+
+    SLOT  = 1800   # 30 min
+    N     = 48     # slots en 24h
+    MIN_GAP = 8    # 8 × 30min = 4h
+
+    active_by_node: dict = {}
+    for r in rows:
+        slot = (r["minute_ts"] - since) // SLOT
+        if 0 <= slot < N:
+            active_by_node.setdefault(r["node_id"], set()).add(slot)
+
+    alerts = []
+    for nid, active_set in active_by_node.items():
+        slots = [s in active_set for s in range(N)]
+        i = 0
+        while i < N:
+            if not slots[i]:
+                j = i
+                while j < N and not slots[j]:
+                    j += 1
+                gap_len = j - i
+                if gap_len >= MIN_GAP and any(slots[:i]) and any(slots[j:]):
+                    info   = node_info.get(nid, {})
+                    name   = info.get("long_name") or info.get("short_name") or nid
+                    ts_ini = since + i * SLOT
+                    ts_fin = since + j * SLOT
+                    alerts.append({
+                        "node_id":    nid,
+                        "name":       name,
+                        "gap_start":  time.strftime("%H:%M", time.localtime(ts_ini)),
+                        "gap_end":    time.strftime("%H:%M", time.localtime(ts_fin)),
+                        "gap_start_ts": ts_ini,
+                        "gap_end_ts":   ts_fin,
+                        "duration_h": round(gap_len * 0.5, 1),
+                    })
+                i = j
+            else:
+                i += 1
+
+    alerts.sort(key=lambda a: a["duration_h"], reverse=True)
+    return jsonify({"alerts": alerts, "since_ts": since, "checked_at": now})
+
+
+@app.get("/api/activity/heatmap")
+def get_activity_heatmap():
+    date_str = request.args.get("date")
+    try:
+        d = datetime.date.fromisoformat(date_str) if date_str else datetime.date.today()
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    # Argentina is UTC-3: local midnight = 03:00 UTC
+    day_start = calendar.timegm((d.year, d.month, d.day, 3, 0, 0, 0, 0, 0))
+    day_end   = day_start + 86400
+
+    nodes = _q("""
+        SELECT node_id, short_name, long_name
+        FROM node_stats
+        ORDER BY last_seen_ts DESC
+    """, ())
+
+    rows = _q("""
+        SELECT node_id, minute_ts
+        FROM node_stats_minute
+        WHERE minute_ts >= ? AND minute_ts < ? AND packets_total > 0
+    """, (day_start, day_end))
+
+    active: dict = {}
+    for r in rows:
+        nid  = r["node_id"]
+        slot = (r["minute_ts"] - day_start) // 1800  # 1800s = 30 min
+        if 0 <= slot < 48:
+            active.setdefault(nid, set()).add(slot)
+
+    result = []
+    for node in nodes:
+        nid  = node["node_id"]
+        name = node["long_name"] or node["short_name"] or nid
+        node_slots = active.get(nid, set())
+        result.append({
+            "node_id": nid,
+            "name":    name,
+            "slots":   [s in node_slots for s in range(48)],
+        })
+
+    return jsonify({"date": str(d), "nodes": result})
+
+
 FRONTEND_DIST = "/home/daniel/bbs/meshsentinel/frontend/dist"
 
 @app.get("/")
@@ -682,6 +859,14 @@ def serve_index():
 @app.get("/assets/<path:path>")
 def serve_assets(path):
     return send_from_directory(f"{FRONTEND_DIST}/assets", path)
+
+@app.get("/favicon.png")
+def serve_favicon_png():
+    return send_from_directory(FRONTEND_DIST, "favicon.png")
+
+@app.get("/favicon.ico")
+def serve_favicon_ico():
+    return send_from_directory(FRONTEND_DIST, "favicon.ico")
 
 
 @app.errorhandler(404)

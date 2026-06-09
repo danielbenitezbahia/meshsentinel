@@ -1,9 +1,50 @@
+import json
 import math
+import os
 import sqlite3
 import time
 from typing import Optional
 
 DB_PATH = "traffic_stats.sqlite"
+_WEATHER_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brandsen_weather.json")
+
+# ── Point-in-polygon para partidos ──────────────────────────────────────────
+_PARTIDOS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "partidos.geojson")
+_partidos_features: list = []
+
+def _load_partidos():
+    global _partidos_features
+    try:
+        with open(_PARTIDOS_PATH) as f:
+            _partidos_features = json.load(f)["features"]
+    except Exception:
+        _partidos_features = []
+
+_load_partidos()
+
+def _ray_cast(lon: float, lat: float, ring: list) -> bool:
+    n = len(ring)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = ring[i][0], ring[i][1]
+        xj, yj = ring[j][0], ring[j][1]
+        if ((yi > lat) != (yj > lat)) and (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+def get_partido_for_coords(lat: float, lon: float) -> Optional[str]:
+    for feat in _partidos_features:
+        geom = feat["geometry"]
+        coords = geom["coordinates"]
+        if geom["type"] == "Polygon":
+            if _ray_cast(lon, lat, coords[0]):
+                return feat["properties"]["nombre"]
+        elif geom["type"] == "MultiPolygon":
+            if any(_ray_cast(lon, lat, poly[0]) for poly in coords):
+                return feat["properties"]["nombre"]
+    return None
 
 
 def _now() -> int:
@@ -71,16 +112,42 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS environment_metrics (
+      node_id             TEXT    NOT NULL,
+      ts                  INTEGER NOT NULL,
+      temperature         REAL,
+      relative_humidity   REAL,
+      barometric_pressure REAL,
+      gas_resistance      REAL,
+      voltage             REAL,
+      current             REAL,
+      iaq                 INTEGER,
+      PRIMARY KEY (node_id, ts)
+    )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_envmet_node_ts ON environment_metrics(node_id, ts DESC)"
+    )
+
     # Columnas opcionales en node_stats (migración segura)
     for col, typedef in [
         ("hops_from_bbs", "INTEGER"), ("snr_from_bbs", "REAL"),
         ("lat", "REAL"), ("lon", "REAL"),
         ("altitude", "INTEGER"), ("position_ts", "INTEGER"),
+        ("partido", "TEXT"),
     ]:
         try:
             cur.execute(f"ALTER TABLE node_stats ADD COLUMN {col} {typedef}")
         except Exception:
             pass  # ya existe
+
+    # Backfill partido para nodos que ya tienen lat/lon pero no tienen partido
+    cur.execute("SELECT node_id, lat, lon FROM node_stats WHERE partido IS NULL AND lat IS NOT NULL AND lon IS NOT NULL")
+    for nid, lat, lon in cur.fetchall():
+        partido = get_partido_for_coords(lat, lon)
+        if partido:
+            cur.execute("UPDATE node_stats SET partido = ? WHERE node_id = ?", (partido, nid))
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS device_metrics (
@@ -155,6 +222,28 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_tr_paths_target_ts ON traceroute_paths(target, ts DESC)"
     )
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS node_events (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts             INTEGER NOT NULL,
+      node_id        TEXT    NOT NULL,
+      short_name     TEXT,
+      long_name      TEXT,
+      event_type     TEXT    NOT NULL DEFAULT 'new_node',
+      hops           INTEGER,
+      snr            REAL,
+      heard_by       TEXT,
+      heard_by_short TEXT,
+      heard_by_long  TEXT
+    )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_node_events_ts ON node_events(ts DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_node_events_node ON node_events(node_id)"
+    )
+
     for col, typedef in [("relay_node", "TEXT"), ("rx_snr", "REAL"), ("hop_count", "INTEGER")]:
         try:
             cur.execute(f"ALTER TABLE node_track ADD COLUMN {col} {typedef}")
@@ -193,6 +282,59 @@ def record_neighbors(reporter_id: str, neighbors: list):
         """, (snr, nid, reporter_id))
     con.commit()
     con.close()
+
+
+def record_node_event(
+    node_id: str,
+    short_name: Optional[str],
+    long_name: Optional[str],
+    event_type: str = "new_node",
+    hops: Optional[int] = None,
+    snr: Optional[float] = None,
+    heard_by: Optional[str] = None,
+    heard_by_short: Optional[str] = None,
+    heard_by_long: Optional[str] = None,
+):
+    ts = _now()
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+        INSERT INTO node_events
+          (ts, node_id, short_name, long_name, event_type, hops, snr,
+           heard_by, heard_by_short, heard_by_long)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (ts, node_id, short_name, long_name, event_type,
+          hops, snr, heard_by, heard_by_short, heard_by_long))
+    con.commit()
+    con.close()
+
+
+def update_node_event_heard_by(
+    node_id: str,
+    heard_by: str,
+    heard_by_short: Optional[str] = None,
+    heard_by_long: Optional[str] = None,
+    max_age_seconds: int = 1800,
+) -> bool:
+    """Actualiza heard_by en el evento new_node más reciente del nodo, si es reciente."""
+    cutoff = _now() - max_age_seconds
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT rowid FROM node_events
+        WHERE node_id = ? AND event_type = 'new_node' AND ts >= ?
+        ORDER BY ts DESC LIMIT 1
+    """, (node_id, cutoff))
+    row = cur.fetchone()
+    if not row:
+        con.close()
+        return False
+    cur.execute("""
+        UPDATE node_events SET heard_by=?, heard_by_short=?, heard_by_long=?
+        WHERE rowid=?
+    """, (heard_by, heard_by_short, heard_by_long, row[0]))
+    con.commit()
+    con.close()
+    return True
 
 
 def update_node_hop_info(node_id: str, hops_from_bbs: Optional[int], snr_from_bbs: Optional[float]):
@@ -501,3 +643,51 @@ def update_node_position(node_id: str, lat: float, lon: float, altitude: Optiona
         """, (node_id, ts, ts, lat, lon, altitude, ts))
     con.commit()
     con.close()
+
+
+def record_environment_metrics(node_id: str, env: dict) -> None:
+    ts = _now()
+    temp     = env.get("temperature")
+    humidity = env.get("relativeHumidity") or env.get("relative_humidity")
+    pressure = env.get("barometricPressure") or env.get("barometric_pressure")
+    gas      = env.get("gasResistance") or env.get("gas_resistance")
+    voltage  = env.get("voltage")
+    current  = env.get("current")
+    iaq      = env.get("iaq")
+    if all(v is None for v in (temp, humidity, pressure, gas, voltage, current, iaq)):
+        return
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+        INSERT OR REPLACE INTO environment_metrics
+        (node_id, ts, temperature, relative_humidity, barometric_pressure,
+         gas_resistance, voltage, current, iaq)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (node_id, ts, temp, humidity, pressure, gas, voltage, current, iaq))
+    con.commit()
+    con.close()
+
+
+def update_node_partido(node_id: str, lat: float, lon: float) -> Optional[str]:
+    partido = get_partido_for_coords(lat, lon)
+    if partido:
+        con = sqlite3.connect(DB_PATH)
+        con.execute("UPDATE node_stats SET partido = ? WHERE node_id = ?", (partido, node_id))
+        con.commit()
+        con.close()
+    return partido
+
+
+def save_brandsen_weather(data: dict) -> None:
+    try:
+        with open(_WEATHER_CACHE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def load_brandsen_weather() -> Optional[dict]:
+    try:
+        with open(_WEATHER_CACHE) as f:
+            return json.load(f)
+    except Exception:
+        return None

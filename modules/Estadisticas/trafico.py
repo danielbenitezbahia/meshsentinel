@@ -19,8 +19,8 @@ def display_menu():
         "[4] 📡 Channel util 24hs\n"
         "[5] 🔍 Detalle nodo\n"
         "[6] ❓ Ayuda\n"
-        "> opcion:\n"
-        "'cd ..' volver"
+        "[7] ↩ Volver\n"
+        "> opcion:"
     )
 
 
@@ -224,6 +224,9 @@ def process_command(user_id, command, bbs_system):
 
     if cmd.startswith("!"):
         return _detalle_nodo(cmd)
+
+    if cmd == "7":
+        return "__back__"
 
     if cmd in ("6", "help", "ayuda", "?"):
         return (

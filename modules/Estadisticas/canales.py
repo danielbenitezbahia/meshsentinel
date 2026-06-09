@@ -26,8 +26,8 @@ def display_menu():
         "[2] 📋 Actividad canal N\n"
         "[3] 👥 Top remitentes\n"
         "[4] ❓ Ayuda\n"
-        "> opcion:\n"
-        "'cd ..' volver"
+        "[5] ↩ Volver\n"
+        "> opcion:"
     )
 
 
@@ -149,6 +149,9 @@ def process_command(user_id, command, bbs):
 
     if cmd in ("", "menu"):
         return display_menu()
+
+    if cmd == "5":
+        return "__back__"
 
     if cmd == "1":
         return _resumen_canales()
