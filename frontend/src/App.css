@@ -45,6 +45,7 @@ body, #root {
 .tab {
   background: none;
   border: none;
+  text-decoration: none;
   color: #546e7a;
   font-family: inherit;
   font-size: 13px;
@@ -782,7 +783,7 @@ body, #root {
 }
 
 .heatmap-table-wrap {
-  flex: 2;
+  flex: 4;
   min-width: 0;
   overflow: auto;
   display: flex;
@@ -807,14 +808,43 @@ body, #root {
   left: 0;
   z-index: 1;
   background: #0a1929;
-  width: 240px;
-  min-width: 240px;
+  width: 300px;
+  min-width: 300px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 10px;
+  font-size: 13px;
+  color: #90a4ae;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.hm-node-label {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: 16px;
-  font-size: 13px;
-  color: #90a4ae;
+}
+
+.hm-battery-wrap {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.hm-sparkline {
+  display: block;
+  overflow: visible;
+}
+
+.hm-battery-pct {
+  font-size: 10px;
+  min-width: 26px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 
@@ -828,11 +858,29 @@ body, #root {
 }
 
 .heatmap-name-header {
-  font-size: 11px;
+  font-size: 13px;
   color: #546e7a;
   font-weight: 700;
   letter-spacing: 0.5px;
 }
+
+.hm-header-label {
+  flex-shrink: 0;
+}
+
+.hm-search {
+  flex: 1;
+  min-width: 0;
+  background: #0d2137;
+  border: 1px solid #1e3a4f;
+  border-radius: 3px;
+  color: #90a4ae;
+  font-size: 13px;
+  padding: 1px 5px;
+  outline: none;
+}
+.hm-search::placeholder { color: #37566a; }
+.hm-search:focus { border-color: #2e6a8e; }
 
 .heatmap-slots {
   display: flex;
@@ -845,7 +893,7 @@ body, #root {
 }
 
 .heatmap-hour-label {
-  font-size: 11px;
+  font-size: 13px;
   color: #546e7a;
   text-align: center;
   width: 26px;
@@ -897,7 +945,7 @@ body, #root {
 
 /* ── Alerts panel ── */
 .alerts-panel {
-  flex: 1;
+  flex: 0 0 300px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1019,9 +1067,24 @@ body, #root {
   letter-spacing: 0.3px;
 }
 
+.alert-card-critical {
+  border-left-color: #ef4444;
+}
+
+.alert-card-battery {
+  border-left-color: #f97316;
+}
+
+.alert-battery-pct {
+  font-size: 15px;
+  font-weight: 700;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Localities panel ── */
 .localities-panel {
-  flex: 1;
+  flex: 0 0 280px;
   min-width: 0;
   display: flex;
   flex-direction: column;

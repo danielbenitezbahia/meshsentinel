@@ -82,6 +82,11 @@ class Interface:
                 logger.info("Own node ID: %s", self._own_node_id)
             except Exception:
                 logger.exception("Could not determine own node ID")
+            try:
+                self.interface.localNode.setOwner(long_name="Sentinel BBS 👉 sentinelmesh.ar")
+                logger.info("Node long name updated")
+            except Exception:
+                logger.exception("Could not update node long name")
             self._sync_node_positions()
             self._sync_channel_names()
             self._hook_raw_packets()
@@ -349,6 +354,24 @@ class Interface:
                 return
 
             # ------------------------------------------------------------
+            # ✅ NODE_STATUS_APP — status message del nodo
+            # ------------------------------------------------------------
+            if portnum == "NODE_STATUS_APP" and sender:
+                try:
+                    from meshtastic.protobuf import mesh_pb2
+                    raw_payload = decoded.get("payload") or b""
+                    if isinstance(raw_payload, (bytes, bytearray)) and raw_payload:
+                        sm = mesh_pb2.StatusMessage()
+                        sm.ParseFromString(bytes(raw_payload))
+                        status_text = sm.status.strip()
+                        if status_text:
+                            traffic_stats.update_node_status_message(sender, status_text)
+                            logger.info("NODE_STATUS from %s: %r", sender, status_text)
+                except Exception:
+                    logger.exception("Error decodificando NODE_STATUS_APP de %s", sender)
+                return
+
+            # ------------------------------------------------------------
             # ✅ NEIGHBORINFO_APP — topología de la mesh
             # ------------------------------------------------------------
             if portnum == "NEIGHBORINFO_APP" and sender:
@@ -517,6 +540,7 @@ class Interface:
 
         PORTNUM_NAMES = {
             1: "TEXT_MESSAGE_APP", 3: "POSITION_APP", 4: "NODEINFO_APP",
+            36: "NODE_STATUS_APP",
             67: "TELEMETRY_APP", 70: "TRACEROUTE_APP", 71: "NEIGHBORINFO_APP",
             72: "DETECTION_SENSOR_APP", 73: "PAXCOUNTER_APP",
         }

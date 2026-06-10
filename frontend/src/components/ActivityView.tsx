@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { fetchActivityHeatmap, fetchActivityAlerts, fetchLocalities } from "../api";
-import type { ActivityHeatmapNode, ActivityAlert, Locality, NodeEnvMetrics } from "../types";
+import { fetchActivityHeatmap, fetchActivityAlerts, fetchLocalities, fetchEnergyDay } from "../api";
+import type { ActivityHeatmapNode, ActivityAlert, Locality, NodeEnvMetrics, NodeEnergyData, EnergyReading } from "../types";
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const REFRESH_MS      = 15 * 60 * 1000;  // 15 min — refresca todo
@@ -35,13 +35,54 @@ function formatDuration(h: number): string {
   return mm === 0 ? `${hh}h` : `${hh}h ${mm}m`;
 }
 
+// ── Battery sparkline ─────────────────────────────────────────────────────────
+function BatterySparkline({ energy, dayStart, dayEnd }: {
+  energy: NodeEnergyData;
+  dayStart: number;
+  dayEnd: number;
+}) {
+  const W = 58, H = 16;
+  const { readings, latest_battery, drop } = energy;
+  if (!readings.length) return null;
+
+  const span = dayEnd - dayStart || 1;
+  const pts = readings.map((r: EnergyReading) => {
+    const x = ((r.ts - dayStart) / span) * W;
+    const y = H - (r.b / 100) * H;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+
+  const color = latest_battery < 20 ? "#ef4444"
+              : drop >= 20          ? "#f97316"
+              : latest_battery < 40 ? "#facc15"
+              :                       "#4ade80";
+
+  return (
+    <div className="hm-battery-wrap">
+      <svg width={W} height={H} className="hm-sparkline">
+        <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+      <span className="hm-battery-pct" style={{ color }}>{latest_battery}%</span>
+    </div>
+  );
+}
+
 // ── Heatmap row ──────────────────────────────────────────────────────────────
-function NodeRow({ node, today }: { node: ActivityHeatmapNode; today: boolean }) {
+function NodeRow({ node, today, energy, dayStart, dayEnd }: {
+  node: ActivityHeatmapNode;
+  today: boolean;
+  energy?: NodeEnergyData;
+  dayStart: number;
+  dayEnd: number;
+}) {
   const hasAnyActivity = node.slots.some(Boolean);
   return (
     <div className={`heatmap-row ${!hasAnyActivity ? "heatmap-row-silent" : ""}`}>
       <div className="heatmap-name" title={`${node.name} (${node.node_id})`}>
-        {node.name}
+        <span className="hm-node-label">{node.name}</span>
+        {energy && energy.readings.length > 0 && (
+          <BatterySparkline energy={energy} dayStart={dayStart} dayEnd={dayEnd} />
+        )}
       </div>
       <div className="heatmap-slots">
         {HOURS.map(h => (
@@ -68,16 +109,29 @@ function NodeRow({ node, today }: { node: ActivityHeatmapNode; today: boolean })
 
 // ── Alert card ───────────────────────────────────────────────────────────────
 function AlertCard({ alert }: { alert: ActivityAlert }) {
+  const isBatteryCritical = alert.alert_type === "battery_critical";
+  const isBatteryDrop     = alert.alert_type === "battery_drop";
+  const isBattery         = isBatteryCritical || isBatteryDrop;
+
+  const label = isBatteryCritical ? "Batería crítica"
+              : isBatteryDrop     ? `Caída de batería  −${alert.drop}%`
+              :                     "Posible caída de batería";
+
+  const cardClass = `alert-card ${isBatteryCritical ? "alert-card-critical" : isBatteryDrop ? "alert-card-battery" : ""}`;
+
   return (
-    <div className="alert-card">
+    <div className={cardClass}>
       <div className="alert-card-top">
         <span className="alert-node-name" title={alert.node_id}>{alert.name}</span>
-        <span className="alert-duration">{formatDuration(alert.duration_h)}</span>
+        {isBattery && alert.battery_level != null
+          ? <span className="alert-battery-pct" style={{ color: isBatteryCritical ? "#ef4444" : "#f97316" }}>{alert.battery_level}%</span>
+          : <span className="alert-duration">{formatDuration(alert.duration_h)}</span>
+        }
       </div>
       <div className="alert-time-range">
         {alert.gap_start} <span className="alert-arrow">→</span> {alert.gap_end}
       </div>
-      <div className="alert-label">Posible caída de batería</div>
+      <div className="alert-label">{label}</div>
     </div>
   );
 }
@@ -165,6 +219,10 @@ export default function ActivityView() {
   const [localities, setLocalities]     = useState<Locality[]>([]);
   const [loadingLoc, setLoadingLoc]     = useState(false);
 
+  const [energyMap, setEnergyMap]       = useState<Map<string, NodeEnergyData>>(new Map());
+  const [dayBounds, setDayBounds]       = useState<{ start: number; end: number } | null>(null);
+  const [nodeSearch, setNodeSearch]     = useState("");
+
   const today = todayAR();
   const heatTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
   const alertsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -201,17 +259,29 @@ export default function ActivityView() {
     finally { setLoadingLoc(false); }
   }, []);
 
+  const loadEnergy = useCallback(async (d: string) => {
+    try {
+      const data = await fetchEnergyDay(d);
+      const map = new Map<string, NodeEnergyData>();
+      data.nodes.forEach(n => map.set(n.node_id, n));
+      setEnergyMap(map);
+      setDayBounds({ start: data.day_start, end: data.day_end });
+    } catch { /* silently keep last data */ }
+  }, []);
+
   // Carga inicial y refresh de 15 min para todo
   useEffect(() => {
     const refresh = () => {
-      loadHeatmap(todayAR());
+      const d = todayAR();
+      loadHeatmap(d);
       loadAlerts();
       loadLocalities();
+      loadEnergy(d);
     };
     refresh();
     heatTimerRef.current = setInterval(refresh, REFRESH_MS);
     return () => { if (heatTimerRef.current) clearInterval(heatTimerRef.current); };
-  }, [loadHeatmap, loadAlerts, loadLocalities]);
+  }, [loadHeatmap, loadAlerts, loadLocalities, loadEnergy]);
 
   // Alerts también cada 5 min
   useEffect(() => {
@@ -219,14 +289,20 @@ export default function ActivityView() {
     return () => { if (alertsTimerRef.current) clearInterval(alertsTimerRef.current); };
   }, [loadAlerts]);
 
-  // Recarga heatmap cuando cambia la fecha (manual)
-  useEffect(() => { loadHeatmap(date); }, [date, loadHeatmap]);
+  // Recarga heatmap y energía cuando cambia la fecha (manual)
+  useEffect(() => {
+    loadHeatmap(date);
+    loadEnergy(date);
+  }, [date, loadHeatmap, loadEnergy]);
 
   const goDay = (delta: number) => {
     const next = addDays(date, delta);
     if (next <= today) setDate(next);
   };
 
+  const filteredNodes = nodeSearch.trim()
+    ? nodes.filter(n => n.name.toLowerCase().includes(nodeSearch.toLowerCase()))
+    : nodes;
   const activeCount = nodes.filter(n => n.slots.some(Boolean)).length;
   const checkedLabel = alertsCheckedAt
     ? new Date(alertsCheckedAt * 1000).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
@@ -264,7 +340,15 @@ export default function ActivityView() {
           {!loadingHeat && !errorHeat && (
             <>
               <div className="heatmap-header-row">
-                <div className="heatmap-name heatmap-name-header">Nodo</div>
+                <div className="heatmap-name heatmap-name-header">
+                  <span className="hm-header-label">Nodo</span>
+                  <input
+                    className="hm-search"
+                    placeholder="filtrar..."
+                    value={nodeSearch}
+                    onChange={e => setNodeSearch(e.target.value)}
+                  />
+                </div>
                 <div className="heatmap-slots heatmap-hour-headers">
                   {HOURS.map(h => (
                     <div key={h} className="heatmap-hour-group heatmap-hour-label">
@@ -274,8 +358,15 @@ export default function ActivityView() {
                 </div>
               </div>
               <div className="heatmap-body">
-                {nodes.map(node => (
-                  <NodeRow key={node.node_id} node={node} today={date === today} />
+                {filteredNodes.map(node => (
+                  <NodeRow
+                    key={node.node_id}
+                    node={node}
+                    today={date === today}
+                    energy={energyMap.get(node.node_id)}
+                    dayStart={dayBounds?.start ?? 0}
+                    dayEnd={dayBounds?.end ?? 86400}
+                  />
                 ))}
               </div>
             </>

@@ -233,19 +233,45 @@ export interface LocalitiesResponse {
 }
 
 export interface ActivityAlert {
+  alert_type: "gap" | "battery_critical" | "battery_drop";
   node_id: string;
   name: string;
-  gap_start: string;      // "HH:MM" en hora local Argentina
-  gap_end: string;        // "HH:MM"
+  gap_start: string;
+  gap_end: string;
   gap_start_ts: number;
   gap_end_ts: number;
-  duration_h: number;     // horas de ausencia
+  duration_h: number;
+  severity: number;
+  battery_level?: number;
+  drop?: number;
 }
 
 export interface ActivityAlertsResponse {
   alerts: ActivityAlert[];
   since_ts: number;
   checked_at: number;
+}
+
+export interface EnergyReading {
+  ts: number;
+  b: number;   // battery_level 0-100
+  v: number | null;  // voltage
+}
+
+export interface NodeEnergyData {
+  node_id: string;
+  name: string;
+  readings: EnergyReading[];
+  latest_battery: number;
+  max_battery: number;
+  drop: number;
+}
+
+export interface EnergyDayResponse {
+  date: string;
+  day_start: number;
+  day_end: number;
+  nodes: NodeEnergyData[];
 }
 
 export interface ActivityHeatmapNode {

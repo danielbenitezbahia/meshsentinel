@@ -55,6 +55,13 @@ PARTIDO_ORDER = ["Bahia Blanca", "Monte Hermoso", "Coronel Dorrego", "Tornquist"
 SMN_BETWEEN_PARTIDOS_DELAY = 10  # segundos entre mensaje y mensaje
 NEW_NODE_NOTIFY_NODES = ["!da4846ec", "!33686e48"]  # pilgrim, daniel movil
 
+# Broadcasts programados a canal 0 — (año, mes, día, hora local AR, mensaje)
+_SENTINEL_LOG_SLOTS = [
+    ((2026, 6,  9, 20), ">> SENTINEL BBS // LOG PÚBLICO #1\n>> Red activa. 24hs de datos disponibles.\n>> URL: sentinelmesh.ar\n>> Que tal una partida de MeshWars?"),
+    ((2026, 6, 12, 20), ">> SENTINEL BBS // LOG PÚBLICO #2\n>> Red activa. 24hs de datos disponibles.\n>> URL: sentinelmesh.ar\n>> Vamos Argentina!!!"),
+    ((2026, 6, 14, 20), ">> SENTINEL BBS // LOG PÚBLICO #3\n>> Red activa. 24hs de datos disponibles.\n>> URL: sentinelmesh.ar\n>> Buen fin de semana!"),
+]
+
 
 class BBSSystem:
     def __init__(self):
@@ -65,6 +72,7 @@ class BBSSystem:
         self._last_smn_public_broadcast = 0
         self._last_smn_broadcast_content = None  # contenido del último broadcast emitido
         self._smn_broadcast_slots_done = set()   # (date, hour) ya emitidos hoy
+        self._sentinel_log_sent = set()          # (year, month, day, hour) ya enviados
 
         store_forward.init_db()
         bbs_users.init_db()
@@ -91,6 +99,16 @@ class BBSSystem:
             if _now_dt.hour in SMN_BROADCAST_HOURS and _slot not in self._smn_broadcast_slots_done:
                 self._smn_broadcast_slots_done.add(_slot)
                 self.broadcast_smn_alerts_if_unchanged(force=True, hour=_now_dt.hour)
+
+            _now_key = (_now_dt.year, _now_dt.month, _now_dt.day, _now_dt.hour)
+            for idx, (slot, _msg) in enumerate(_SENTINEL_LOG_SLOTS, start=1):
+                if _now_key == slot and slot not in self._sentinel_log_sent:
+                    self._sentinel_log_sent.add(slot)
+                    try:
+                        self.interface.send_channel_message(_msg, channel_index=0)
+                        logger.info("Sentinel Log #%d enviado al canal 0", idx)
+                    except Exception as _exc:
+                        logger.warning("Error enviando Sentinel Log #%d: %s", idx, _exc)
 
             if (now - self._last_delivery) >= store_forward.DELIVERY_INTERVAL_SECONDS:
                 self._last_delivery = now

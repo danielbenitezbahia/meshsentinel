@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { fetchGraph } from "./api";
 import type { MeshNode, MeshEdge, GraphFreshness } from "./types";
 import MapView from "./components/MapView";
@@ -9,10 +10,7 @@ import MeshWarsView from "./components/MeshWarsView";
 import ActivityView from "./components/ActivityView";
 import "./App.css";
 
-type View = "mesh" | "tracks" | "stats" | "wars" | "activity";
-
-export default function App() {
-  const [view, setView] = useState<View>("mesh");
+function MeshView() {
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [edges, setEdges] = useState<MeshEdge[]>([]);
   const [freshness, setFreshness] = useState<GraphFreshness | null>(null);
@@ -37,10 +35,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    loadGraph();
-  }, []);
-
+  useEffect(() => { loadGraph(); }, [loadGraph]);
 
   const filtered = nodes.filter((n) => {
     const q = search.toLowerCase();
@@ -52,65 +47,17 @@ export default function App() {
   });
 
   return (
-    <div className="root-layout">
-      <nav className="tabbar">
-        <span className="tabbar-brand">Sentinel BBS</span>
-        <button
-          className={`tab ${view === "mesh" ? "tab-active" : ""}`}
-          onClick={() => setView("mesh")}
-        >
-          Mesh
-        </button>
-        <button
-          className={`tab ${view === "tracks" ? "tab-active" : ""}`}
-          onClick={() => setView("tracks")}
-        >
-          Trayectorias
-        </button>
-        <button
-          className={`tab ${view === "stats" ? "tab-active" : ""}`}
-          onClick={() => setView("stats")}
-        >
-          Estadísticas
-        </button>
-        <button
-          className={`tab ${view === "activity" ? "tab-active" : ""}`}
-          onClick={() => setView("activity")}
-        >
-          Actividad
-        </button>
-        <button
-          className={`tab ${view === "wars" ? "tab-active" : ""}`}
-          onClick={() => setView("wars")}
-        >
-          MeshWars
-        </button>
-      </nav>
-
-      {view === "tracks" ? (
-        <TrackView />
-      ) : view === "stats" ? (
-        <StatsView />
-      ) : view === "wars" ? (
-        <MeshWarsView />
-      ) : view === "activity" ? (
-        <ActivityView />
-      ) : (
-      <div className="app">
+    <div className="app">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="sidebar-sub">
-            {nodes.length} nodos · {edges.length} links
-          </div>
+          <div className="sidebar-sub">{nodes.length} nodos · {edges.length} links</div>
         </div>
-
         <input
           className="search"
           placeholder="Buscar nodo..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-
         <div className="node-list">
           {filtered.map((n) => {
             const fresh = n.last_seen_mins_ago != null && n.last_seen_mins_ago < 60;
@@ -123,9 +70,7 @@ export default function App() {
               >
                 <span className={`dot ${fresh ? "fresh" : "stale"}`} />
                 <div className="node-item-info">
-                  <span className="node-item-name">
-                    {n.short_name || n.node_id}
-                  </span>
+                  <span className="node-item-name">{n.short_name || n.node_id}</span>
                   <span className="node-item-detail">
                     {n.hops_from_bbs != null ? `${n.hops_from_bbs} hops` : ""}
                     {n.snr_from_bbs != null ? ` · ${n.snr_from_bbs}dB` : ""}
@@ -158,9 +103,7 @@ export default function App() {
             {loading ? "Cargando…" : "↺ Actualizar"}
           </button>
         </div>
-
         {error && <div className="error-bar">{error}</div>}
-
         <div className="graph-area">
           <MapView
             nodes={nodes}
@@ -169,13 +112,35 @@ export default function App() {
             onSelectNode={(id) => { setSelectedId(id); setSelectedNode(nodes.find(n => n.node_id === id) ?? null); }}
           />
         </div>
-
         {selectedNode && (
           <NodePanel node={selectedNode} onClose={() => { setSelectedId(""); setSelectedNode(null); }} />
         )}
       </main>
     </div>
-      )}
+  );
+}
+
+export default function App() {
+  return (
+    <div className="root-layout">
+      <nav className="tabbar">
+        <span className="tabbar-brand">Sentinel BBS</span>
+        <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/mesh">Mesh</NavLink>
+        <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/trayectorias">Trayectorias</NavLink>
+        <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/estadisticas">Estadísticas</NavLink>
+        <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/actividad">Actividad</NavLink>
+        <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/meshwars">MeshWars</NavLink>
+      </nav>
+
+      <Routes>
+        <Route path="/" element={<Navigate to="/mesh" replace />} />
+        <Route path="/mesh" element={<MeshView />} />
+        <Route path="/trayectorias" element={<TrackView />} />
+        <Route path="/estadisticas" element={<StatsView />} />
+        <Route path="/actividad" element={<ActivityView />} />
+        <Route path="/meshwars" element={<MeshWarsView />} />
+        <Route path="*" element={<Navigate to="/mesh" replace />} />
+      </Routes>
     </div>
   );
 }

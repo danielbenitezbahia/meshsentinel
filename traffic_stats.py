@@ -136,6 +136,7 @@ def init_db():
         ("lat", "REAL"), ("lon", "REAL"),
         ("altitude", "INTEGER"), ("position_ts", "INTEGER"),
         ("partido", "TEXT"),
+        ("status_message", "TEXT"),
     ]:
         try:
             cur.execute(f"ALTER TABLE node_stats ADD COLUMN {col} {typedef}")
@@ -663,6 +664,13 @@ def record_environment_metrics(node_id: str, env: dict) -> None:
          gas_resistance, voltage, current, iaq)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (node_id, ts, temp, humidity, pressure, gas, voltage, current, iaq))
+    con.commit()
+    con.close()
+
+
+def update_node_status_message(node_id: str, status: str) -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute("UPDATE node_stats SET status_message = ? WHERE node_id = ?", (status, node_id))
     con.commit()
     con.close()
 

@@ -749,8 +749,9 @@ def get_activity_localities():
 
 @app.get("/api/activity/alerts")
 def get_activity_alerts():
-    now   = int(time.time())
-    since = now - 86400  # últimas 24 horas
+    now      = int(time.time())
+    since    = now - 86400
+    since_4h = now - 4 * 3600
 
     rows = _q("""
         SELECT node_id, minute_ts
@@ -763,9 +764,9 @@ def get_activity_alerts():
         "SELECT node_id, short_name, long_name FROM node_stats", ()
     )}
 
-    SLOT  = 1800   # 30 min
-    N     = 48     # slots en 24h
-    MIN_GAP = 8    # 8 × 30min = 4h
+    SLOT    = 1800
+    N       = 48
+    MIN_GAP = 8
 
     active_by_node: dict = {}
     for r in rows:
@@ -774,6 +775,8 @@ def get_activity_alerts():
             active_by_node.setdefault(r["node_id"], set()).add(slot)
 
     alerts = []
+
+    # ── Alertas de caída de nodo ─────────────────────────────────────────────
     for nid, active_set in active_by_node.items():
         slots = [s in active_set for s in range(N)]
         i = 0
@@ -789,6 +792,7 @@ def get_activity_alerts():
                     ts_ini = since + i * SLOT
                     ts_fin = since + j * SLOT
                     alerts.append({
+                        "alert_type": "gap",
                         "node_id":    nid,
                         "name":       name,
                         "gap_start":  time.strftime("%H:%M", time.localtime(ts_ini)),
@@ -796,13 +800,116 @@ def get_activity_alerts():
                         "gap_start_ts": ts_ini,
                         "gap_end_ts":   ts_fin,
                         "duration_h": round(gap_len * 0.5, 1),
+                        "severity":   1,
                     })
                 i = j
             else:
                 i += 1
 
-    alerts.sort(key=lambda a: a["duration_h"], reverse=True)
+    # ── Alertas de batería ───────────────────────────────────────────────────
+    batt_rows = _q("""
+        SELECT node_id, battery_level, ts
+        FROM device_metrics
+        WHERE battery_level IS NOT NULL AND ts >= ?
+        ORDER BY node_id, ts
+    """, (since_4h,))
+
+    batt_by_node: dict = {}
+    for r in batt_rows:
+        batt_by_node.setdefault(r["node_id"], []).append((r["ts"], r["battery_level"]))
+
+    added_battery_alert: set = set()
+    for nid, readings in batt_by_node.items():
+        if len(readings) < 2:
+            continue
+        info    = node_info.get(nid, {})
+        name    = info.get("long_name") or info.get("short_name") or nid
+        latest  = readings[-1][1]
+        first   = readings[0][1]
+        drop    = first - latest
+
+        if latest < 20 and nid not in added_battery_alert:
+            alerts.append({
+                "alert_type":     "battery_critical",
+                "node_id":        nid,
+                "name":           name,
+                "battery_level":  latest,
+                "drop":           int(drop) if drop > 0 else 0,
+                "gap_start":      time.strftime("%H:%M", time.localtime(readings[0][0])),
+                "gap_end":        time.strftime("%H:%M", time.localtime(readings[-1][0])),
+                "gap_start_ts":   readings[0][0],
+                "gap_end_ts":     readings[-1][0],
+                "duration_h":     round((readings[-1][0] - readings[0][0]) / 3600, 1),
+                "severity":       3,
+            })
+            added_battery_alert.add(nid)
+
+        elif drop >= 20 and nid not in added_battery_alert:
+            alerts.append({
+                "alert_type":     "battery_drop",
+                "node_id":        nid,
+                "name":           name,
+                "battery_level":  latest,
+                "drop":           int(drop),
+                "gap_start":      time.strftime("%H:%M", time.localtime(readings[0][0])),
+                "gap_end":        time.strftime("%H:%M", time.localtime(readings[-1][0])),
+                "gap_start_ts":   readings[0][0],
+                "gap_end_ts":     readings[-1][0],
+                "duration_h":     round((readings[-1][0] - readings[0][0]) / 3600, 1),
+                "severity":       2,
+            })
+            added_battery_alert.add(nid)
+
+    alerts.sort(key=lambda a: (a["severity"], a.get("drop", 0) or a.get("duration_h", 0)), reverse=True)
     return jsonify({"alerts": alerts, "since_ts": since, "checked_at": now})
+
+
+@app.get("/api/energy/day")
+def get_energy_day():
+    date_str = request.args.get("date")
+    try:
+        d = datetime.date.fromisoformat(date_str) if date_str else datetime.date.today()
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+
+    day_start = calendar.timegm((d.year, d.month, d.day, 3, 0, 0, 0, 0, 0))
+    day_end   = day_start + 86400
+
+    rows = _q("""
+        SELECT dm.node_id, dm.ts, dm.battery_level, dm.voltage,
+               COALESCE(ns.long_name, ns.short_name, dm.node_id) AS name
+        FROM device_metrics dm
+        LEFT JOIN node_stats ns ON ns.node_id = dm.node_id
+        WHERE dm.ts >= ? AND dm.ts < ? AND dm.battery_level IS NOT NULL
+        ORDER BY dm.node_id, dm.ts
+    """, (day_start, day_end))
+
+    nodes: dict = {}
+    for r in rows:
+        nid = r["node_id"]
+        if nid not in nodes:
+            nodes[nid] = {"node_id": nid, "name": r["name"], "readings": []}
+        nodes[nid]["readings"].append({
+            "ts": r["ts"],
+            "b":  r["battery_level"],
+            "v":  round(r["voltage"], 2) if r["voltage"] else None,
+        })
+
+    result = []
+    for n in nodes.values():
+        levels = [r["b"] for r in n["readings"]]
+        max_b  = max(levels)
+        latest = levels[-1]
+        result.append({
+            "node_id":        n["node_id"],
+            "name":           n["name"],
+            "readings":       n["readings"],
+            "latest_battery": latest,
+            "max_battery":    max_b,
+            "drop":           max_b - latest,
+        })
+
+    return jsonify({"date": d.isoformat(), "day_start": day_start, "day_end": day_end, "nodes": result})
 
 
 @app.get("/api/activity/heatmap")
@@ -868,6 +975,12 @@ def serve_favicon_png():
 def serve_favicon_ico():
     return send_from_directory(FRONTEND_DIST, "favicon.ico")
 
+
+@app.get("/<path:path>")
+def serve_spa(path):
+    if path.startswith("api/"):
+        abort(404)
+    return send_from_directory(FRONTEND_DIST, "index.html")
 
 @app.errorhandler(404)
 def not_found(e):
