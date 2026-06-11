@@ -19,6 +19,7 @@ function MeshView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const loadGraph = useCallback(async () => {
     setLoading(true);
@@ -46,9 +47,19 @@ function MeshView() {
     );
   });
 
+  const closeSidebar = () => setSidebarOpen(false);
+  const selectNode = (id: string) => {
+    setSelectedId(id);
+    setSelectedNode(nodes.find(n => n.node_id === id) ?? null);
+    closeSidebar();
+  };
+
   return (
     <div className="app">
-      <aside className="sidebar">
+      {/* Backdrop mobile */}
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={closeSidebar} />}
+
+      <aside className={`sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
         <div className="sidebar-header">
           <div className="sidebar-sub">{nodes.length} nodos · {edges.length} links</div>
         </div>
@@ -66,7 +77,7 @@ function MeshView() {
               <div
                 key={n.node_id}
                 className={`node-item ${active ? "active" : ""}`}
-                onClick={() => { setSelectedId(n.node_id); setSelectedNode(n); }}
+                onClick={() => selectNode(n.node_id)}
               >
                 <span className={`dot ${fresh ? "fresh" : "stale"}`} />
                 <div className="node-item-info">
@@ -85,6 +96,7 @@ function MeshView() {
 
       <main className="main">
         <div className="topbar">
+          <button className="btn-sidebar-toggle" onClick={() => setSidebarOpen(o => !o)}>☰</button>
           <div className="topbar-left">
             {freshness && freshness.total_links > 0 ? (
               <span className="freshness">
@@ -109,7 +121,7 @@ function MeshView() {
             nodes={nodes}
             edges={edges}
             selectedId={selectedId}
-            onSelectNode={(id) => { setSelectedId(id); setSelectedNode(nodes.find(n => n.node_id === id) ?? null); }}
+            onSelectNode={(id) => selectNode(id)}
           />
         </div>
         {selectedNode && (
