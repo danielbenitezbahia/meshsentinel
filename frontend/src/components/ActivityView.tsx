@@ -68,12 +68,14 @@ function BatterySparkline({ energy, dayStart, dayEnd }: {
 }
 
 // ── Heatmap row ──────────────────────────────────────────────────────────────
-function NodeRow({ node, today, energy, dayStart, dayEnd }: {
+function NodeRow({ node, today, energy, dayStart, dayEnd, onSlotHover, onSlotLeave }: {
   node: ActivityHeatmapNode;
   today: boolean;
   energy?: NodeEnergyData;
   dayStart: number;
   dayEnd: number;
+  onSlotHover: (text: string, e: React.MouseEvent) => void;
+  onSlotLeave: () => void;
 }) {
   const hasAnyActivity = node.slots.some(Boolean);
   return (
@@ -92,11 +94,14 @@ function NodeRow({ node, today, energy, dayStart, dayEnd }: {
               const active   = node.slots[slotIdx];
               const nowSlot  = (new Date().getUTCHours() - 3 + 24) % 24 * 2 + (new Date().getUTCMinutes() >= 30 ? 1 : 0);
               const isFuture = today && slotIdx >= nowSlot;
+              const tipText  = `${node.name}  ${slotLabel(slotIdx)} – ${slotLabel(Math.min(slotIdx + 1, 47))}`;
               return (
                 <div
                   key={q}
                   className={`heatmap-slot ${active ? "hm-active" : isFuture ? "hm-future" : "hm-inactive"}`}
-                  title={`${slotLabel(slotIdx)} – ${slotLabel(Math.min(slotIdx + 1, 47))}`}
+                  onMouseEnter={e => onSlotHover(tipText, e)}
+                  onMouseMove={e => onSlotHover(tipText, e)}
+                  onMouseLeave={onSlotLeave}
                 />
               );
             })}
@@ -222,6 +227,12 @@ export default function ActivityView() {
   const [energyMap, setEnergyMap]       = useState<Map<string, NodeEnergyData>>(new Map());
   const [dayBounds, setDayBounds]       = useState<{ start: number; end: number } | null>(null);
   const [nodeSearch, setNodeSearch]     = useState("");
+  const [tooltip, setTooltip]           = useState<{ text: string; x: number; y: number } | null>(null);
+
+  const handleSlotHover = useCallback((text: string, e: React.MouseEvent) => {
+    setTooltip({ text, x: e.clientX, y: e.clientY });
+  }, []);
+  const handleSlotLeave = useCallback(() => setTooltip(null), []);
 
   const today = todayAR();
   const heatTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -310,6 +321,11 @@ export default function ActivityView() {
 
   return (
     <div className="heatmap-view">
+      {tooltip && (
+        <div className="hm-tooltip" style={{ left: tooltip.x + 12, top: tooltip.y - 36 }}>
+          {tooltip.text}
+        </div>
+      )}
       {/* Toolbar */}
       <div className="heatmap-toolbar">
         <span className="stats-title">Actividad</span>
@@ -366,6 +382,8 @@ export default function ActivityView() {
                     energy={energyMap.get(node.node_id)}
                     dayStart={dayBounds?.start ?? 0}
                     dayEnd={dayBounds?.end ?? 86400}
+                    onSlotHover={handleSlotHover}
+                    onSlotLeave={handleSlotLeave}
                   />
                 ))}
               </div>

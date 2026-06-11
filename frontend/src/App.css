@@ -943,6 +943,19 @@ body, #root {
 .hm-inactive { background: #7f1d1d; }
 .hm-future   { background: #1a2f45; }
 
+.hm-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: #0d2137;
+  border: 1px solid #1e3a5f;
+  color: #b0bec5;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 /* ── Alerts panel ── */
 .alerts-panel {
   flex: 0 0 300px;
