@@ -1502,9 +1502,12 @@ export default function MeshWarsView() {
           case "done": {
             const f = aiFinalRef.current!;
             let finalCells = f.cells;
-            if (capturedEvent?.targetCell && finalCells[capturedEvent.targetCell]) {
-              const tc = finalCells[capturedEvent.targetCell];
-              finalCells = { ...finalCells, [capturedEvent.targetCell]: { ...tc, troops: Math.max(1, tc.troops + capturedEvent.troopsDelta) } };
+            if (capturedEvent?.affectedCells?.length) {
+              const nc = { ...finalCells };
+              for (const [cellId, delta] of Object.entries(capturedEvent.deltas)) {
+                if (nc[cellId]) nc[cellId] = { ...nc[cellId], troops: Math.max(1, nc[cellId].troops + delta) };
+              }
+              finalCells = nc;
             }
             let newCards = f.playerCards;
             let newPending = prev.pendingCard;
@@ -1546,11 +1549,12 @@ export default function MeshWarsView() {
         } else {
           playTone(440, 0.15, "sine", 0.08);
         }
-        setTimeout(() => {
-          if (!capturedEvent.targetCell) return;
-          if (capturedEvent.type === "POSITIVE") runRechargeFlash(capturedEvent.targetCell, polygonsRef.current);
-          else runBombFlash(capturedEvent.targetCell, polygonsRef.current);
-        }, 600);
+        capturedEvent.affectedCells.forEach((cellId, i) => {
+          setTimeout(() => {
+            if (capturedEvent.type === "POSITIVE") runRechargeFlash(cellId, polygonsRef.current);
+            else runBombFlash(cellId, polygonsRef.current);
+          }, 600 + i * 150);
+        });
       }
     }, delay);
 
@@ -2445,7 +2449,7 @@ export default function MeshWarsView() {
 
         {/* Random event banner */}
         {eventBanner && gs && (() => {
-          const fColor  = COLORS[eventBanner.targetFaction];
+          const fColor  = eventBanner.targetFaction ? COLORS[eventBanner.targetFaction] : "#78909c";
           const tColor  = eventBanner.type === "POSITIVE" ? "#00e5ff" : eventBanner.type === "NEGATIVE" ? "#ff1744" : "#ffd740";
           const tIcon   = eventBanner.type === "POSITIVE" ? "▲" : eventBanner.type === "NEGATIVE" ? "▼" : "◆";
           const tLabel  = eventBanner.type === "POSITIVE" ? "EVENTO POSITIVO" : eventBanner.type === "NEGATIVE" ? "EVENTO NEGATIVO" : "EVENTO NEUTRO";
@@ -2487,7 +2491,7 @@ export default function MeshWarsView() {
                         {eventBanner.title.toUpperCase()}
                       </div>
                       <div style={{ fontSize: 10, color: fColor, marginTop: 4, letterSpacing: 2, textShadow: `0 0 6px ${fColor}` }}>
-                        {NAMES[eventBanner.targetFaction].toUpperCase()}
+                        {eventBanner.targetFaction ? NAMES[eventBanner.targetFaction].toUpperCase() : "TODAS LAS FACCIONES"}
                       </div>
                     </div>
                   </div>

@@ -91,7 +91,7 @@ function NodeRow({ node, today, energy, dayStart, dayEnd }: {
               const slotIdx  = h * 2 + q;
               const active   = node.slots[slotIdx];
               const nowSlot  = (new Date().getUTCHours() - 3 + 24) % 24 * 2 + (new Date().getUTCMinutes() >= 30 ? 1 : 0);
-              const isFuture = today && slotIdx > nowSlot;
+              const isFuture = today && slotIdx >= nowSlot;
               return (
                 <div
                   key={q}

@@ -931,15 +931,19 @@ def get_activity_heatmap():
     """, ())
 
     rows = _q("""
-        SELECT node_id, minute_ts
+        SELECT node_id, minute_ts AS ts
         FROM node_stats_minute
         WHERE minute_ts >= ? AND minute_ts < ? AND packets_total > 0
-    """, (day_start, day_end))
+        UNION
+        SELECT node_id, ts
+        FROM device_metrics
+        WHERE ts >= ? AND ts < ?
+    """, (day_start, day_end, day_start, day_end))
 
     active: dict = {}
     for r in rows:
         nid  = r["node_id"]
-        slot = (r["minute_ts"] - day_start) // 1800  # 1800s = 30 min
+        slot = (r["ts"] - day_start) // 1800  # 1800s = 30 min
         if 0 <= slot < 48:
             active.setdefault(nid, set()).add(slot)
 
