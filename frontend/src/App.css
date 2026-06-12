@@ -1218,6 +1218,11 @@ body, #root {
   display: none;
 }
 
+/* Topbar que solo existe en mobile (tabs sin topbar propio) */
+.topbar-toggle-only {
+  display: none;
+}
+
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width: 768px) {
 
@@ -1265,6 +1270,7 @@ body, #root {
 
   /* Topbar compacto */
   .topbar { padding: 6px 10px; }
+  .topbar-toggle-only { display: flex; }
   .freshness { font-size: 10px; }
 
   /* Node panel: ancho completo */

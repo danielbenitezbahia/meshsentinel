@@ -25,6 +25,7 @@ export default function TrackView() {
   const [loading, setLoading] = useState(false);
   const [tracePath, setTracePath] = useState<TraceHop[] | null>(null);
   const [tracePathTs, setTracePathTs] = useState<number | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     setSelected(new Set());
@@ -81,6 +82,7 @@ export default function TrackView() {
     }
 
     setSelected(new Set([nodeId]));
+    setSidebarOpen(false);
   };
 
   const tracks: TrackData[] = [...selected]
@@ -93,7 +95,9 @@ export default function TrackView() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
+
+      <aside className={`sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
         <div className="sidebar-header">
           <div className="sidebar-title">Trayectorias</div>
           <div className="sidebar-sub">{trackNodes.length} nodos · {date}</div>
@@ -177,7 +181,12 @@ export default function TrackView() {
       </aside>
 
       <main className="main">
-        <TrackMap tracks={tracks} />
+        <div className="topbar topbar-toggle-only">
+          <button className="btn-sidebar-toggle" onClick={() => setSidebarOpen(o => !o)}>☰</button>
+        </div>
+        <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+          <TrackMap tracks={tracks} />
+        </div>
       </main>
     </div>
   );
