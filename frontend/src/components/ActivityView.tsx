@@ -68,7 +68,7 @@ function BatterySparkline({ energy, dayStart, dayEnd }: {
 }
 
 // ── Heatmap row ──────────────────────────────────────────────────────────────
-function NodeRow({ node, today, energy, dayStart, dayEnd, onSlotHover, onSlotLeave }: {
+function NodeRow({ node, today, energy, dayStart, dayEnd, onSlotHover, onSlotLeave, onNameClick }: {
   node: ActivityHeatmapNode;
   today: boolean;
   energy?: NodeEnergyData;
@@ -76,11 +76,17 @@ function NodeRow({ node, today, energy, dayStart, dayEnd, onSlotHover, onSlotLea
   dayEnd: number;
   onSlotHover: (text: string, e: React.MouseEvent) => void;
   onSlotLeave: () => void;
+  onNameClick: (text: string, e: React.MouseEvent) => void;
 }) {
   const hasAnyActivity = node.slots.some(Boolean);
   return (
     <div className={`heatmap-row ${!hasAnyActivity ? "heatmap-row-silent" : ""}`}>
-      <div className="heatmap-name" title={`${node.name} (${node.node_id})`}>
+      <div
+        className="heatmap-name"
+        title={`${node.name} (${node.node_id})`}
+        onClick={e => onNameClick(`${node.name}  ·  ${node.node_id}`, e)}
+        style={{ cursor: "pointer" }}
+      >
         <span className="hm-node-label">{node.name}</span>
         {energy && energy.readings.length > 0 && (
           <BatterySparkline energy={energy} dayStart={dayStart} dayEnd={dayEnd} />
@@ -228,11 +234,17 @@ export default function ActivityView() {
   const [dayBounds, setDayBounds]       = useState<{ start: number; end: number } | null>(null);
   const [nodeSearch, setNodeSearch]     = useState("");
   const [tooltip, setTooltip]           = useState<{ text: string; x: number; y: number } | null>(null);
+  const nameTipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleSlotHover = useCallback((text: string, e: React.MouseEvent) => {
     setTooltip({ text, x: e.clientX, y: e.clientY });
   }, []);
   const handleSlotLeave = useCallback(() => setTooltip(null), []);
+  const handleNameClick = useCallback((text: string, e: React.MouseEvent) => {
+    if (nameTipTimerRef.current) clearTimeout(nameTipTimerRef.current);
+    setTooltip({ text, x: e.clientX, y: e.clientY - 40 });
+    nameTipTimerRef.current = setTimeout(() => setTooltip(null), 2500);
+  }, []);
 
   const today = todayAR();
   const heatTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -384,6 +396,7 @@ export default function ActivityView() {
                     dayEnd={dayBounds?.end ?? 86400}
                     onSlotHover={handleSlotHover}
                     onSlotLeave={handleSlotLeave}
+                    onNameClick={handleNameClick}
                   />
                 ))}
               </div>

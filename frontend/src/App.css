@@ -1294,9 +1294,9 @@ body, #root {
   /* ── Actividad ── */
   .heatmap-view { padding: 10px 10px 0; gap: 8px; }
   .heatmap-toolbar { flex-wrap: wrap; gap: 8px; }
-  .heatmap-main { flex-direction: column; overflow-y: auto; overflow-x: hidden; padding-bottom: 16px; }
+  .heatmap-main { flex-direction: column; overflow-y: auto; overflow-x: hidden; padding-bottom: 32px; }
   .heatmap-table-wrap { flex: none; max-height: 55vh; }
-  .heatmap-name { width: 150px; min-width: 150px; }
+  .heatmap-name { width: 175px; min-width: 175px; }
   .alerts-panel { flex: none; margin-bottom: 0; }
-  .localities-panel { flex: none; margin-bottom: 0; }
+  .localities-panel { flex: none; margin-bottom: 24px; }
 }
