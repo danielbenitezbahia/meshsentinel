@@ -1324,6 +1324,12 @@ export default function MeshWarsView() {
   const [eventBanner, setEventBanner] = useState<GameEvent | null>(null);
   const pendingRechargeRef     = useRef<string | null>(null);
   const prevCardsRef           = useRef(0);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, []);
   gsRef.current = gs;
 
   // AI animation loop — fires each time the queue shrinks
@@ -2307,7 +2313,7 @@ export default function MeshWarsView() {
               overflow: "hidden",
               padding: "0",
               fontFamily: "monospace",
-              minWidth: 240,
+              minWidth: isMobile ? 190 : 240,
               boxShadow: "0 0 24px #00e5ff18, 0 4px 20px rgba(0,0,0,0.6), inset 0 0 40px rgba(0,230,255,0.03)",
             }}>
               {/* Gradient top accent */}
@@ -2462,7 +2468,7 @@ export default function MeshWarsView() {
                 zIndex: 1600, background: "#060d14",
                 border: `1px solid ${tColor}`,
                 borderTop: `3px solid ${tColor}`,
-                borderRadius: 3, padding: 0, minWidth: 380, maxWidth: 500,
+                borderRadius: 3, padding: 0, minWidth: isMobile ? "92vw" : 380, maxWidth: isMobile ? "92vw" : 500,
                 boxShadow: `0 0 30px ${tColor}44, 0 0 80px ${tColor}18, inset 0 0 40px rgba(0,0,0,0.6)`,
                 fontFamily: "monospace", overflow: "hidden",
               }}>
@@ -2518,7 +2524,7 @@ export default function MeshWarsView() {
               {nodesReady ? "Datos de la mesh cargados" : "Cargando nodos..."}
             </div>
             {nodesReady && (
-              <div style={{ display: "flex", gap: 28, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: isMobile ? 16 : 28, alignItems: "center", flexDirection: isMobile ? "column" : "row" }}>
                 {/* Difficulty selector — vertical column */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <div style={{ color: "#4a8a9a", fontFamily: "monospace", fontSize: 10, letterSpacing: 3, marginBottom: 4, textAlign: "center" }}>DIFICULTAD</div>
@@ -2581,7 +2587,7 @@ export default function MeshWarsView() {
                 border: `1px solid ${slide.color}`,
                 borderTop: `3px solid ${slide.color}`,
                 borderRadius: 4,
-                padding: "32px 36px",
+                padding: isMobile ? "20px 16px" : "32px 36px",
                 maxWidth: 560, width: "100%",
                 boxShadow: `0 0 40px ${slide.color}33`,
                 fontFamily: "monospace",
@@ -2668,7 +2674,7 @@ export default function MeshWarsView() {
             boxSizing: "border-box",
           }}>
             <div ref={introTextRef} style={{
-              fontFamily: "monospace", color: "#00e676", fontSize: 19, lineHeight: 1.9,
+              fontFamily: "monospace", color: "#00e676", fontSize: isMobile ? 13 : 19, lineHeight: 1.9,
               whiteSpace: "pre-wrap", maxWidth: 680, width: "100%",
               textShadow: "0 0 8px #00e67666",
               overflowY: "hidden", maxHeight: "75vh",
@@ -2716,7 +2722,7 @@ export default function MeshWarsView() {
 
       {/* Bottom bar — cyberpunk */}
       <div style={{
-        height: 160, flexShrink: 0, display: gs ? "flex" : "none", background: "#06090f",
+        height: isMobile ? 220 : 160, flexShrink: 0, display: gs ? "flex" : "none", background: "#06090f",
         position: "relative",
       }}>
         {/* Gradient top accent */}
@@ -2729,7 +2735,7 @@ export default function MeshWarsView() {
         <div style={{
           width: "33%", height: "100%",
           borderRight: "1px solid #0a1828",
-          display: "flex", flexDirection: "column", padding: "10px 0 6px 12px",
+          display: isMobile ? "none" : "flex", flexDirection: "column", padding: "10px 0 6px 12px",
           boxSizing: "border-box", background: "#060e18", position: "relative",
         }}>
           {/* Panel label */}
@@ -2797,8 +2803,17 @@ export default function MeshWarsView() {
         {/* Center: buttons */}
         <div style={{
           flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-          gap: 8, borderRight: "1px solid #0a1828", padding: "0 12px", flexDirection: "column",
+          gap: 8, borderRight: "1px solid #0a1828", padding: isMobile ? "6px 8px" : "0 12px", flexDirection: "column",
         }}>
+          {isMobile && gs && (
+            <div style={{
+              fontFamily: "monospace", fontSize: 11, fontWeight: 700,
+              color: "#00e5ff", letterSpacing: 1, textAlign: "center",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              width: "100%", flexShrink: 0,
+              textShadow: "0 0 8px #00e5ff66",
+            }}>{statusLine1 || "MESH WARS"}</div>
+          )}
           {!gs ? null : gs.phase === "game_over" ? (
             <button style={btnStyle("#00e5ff")} onClick={startGame}>NUEVA PARTIDA</button>
           ) : inAiTurn ? (
@@ -2854,7 +2869,7 @@ export default function MeshWarsView() {
 
         {/* Right: card flash or combat info */}
         <div ref={rightScrollRef} style={{
-          flex: 1, padding: "10px 16px 22px", display: "flex", flexDirection: "column",
+          flex: 1, padding: isMobile ? "6px 8px 10px" : "10px 16px 22px", display: "flex", flexDirection: "column",
           justifyContent: "flex-start", overflowY: "auto", background: "#080612",
           position: "relative",
         }}>
