@@ -1280,4 +1280,14 @@ body, #root {
     width: auto;
     bottom: 12px;
   }
+
+  /* ── Estadísticas ── */
+  .stats-view { padding: 10px 10px 24px; gap: 12px; }
+  .stats-cards { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .stats-card { padding: 10px 12px; }
+  .stats-card-value { font-size: 20px; }
+  .stats-row { grid-template-columns: 1fr; }
+  .stats-chart-card { padding: 12px; }
+  .stats-chart-half { max-width: 100%; }
+  .rank-grid { grid-template-columns: 1fr; gap: 16px; }
 }
