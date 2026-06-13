@@ -548,14 +548,15 @@ KNOWN_PORTNUMS = {
 }
 
 def _stats_since(period: str) -> int:
+    if period not in ("day", "week", "month"):
+        abort(400)
     if period == "day":
         today = datetime.date.today()
         return int(datetime.datetime.combine(today, datetime.time.min).timestamp())
     elif period == "week":
         return int(time.time()) - 7 * 86400
-    elif period == "month":
+    else:
         return int(time.time()) - 30 * 86400
-    return abort(400)
 
 @app.get("/api/stats/traffic")
 def get_traffic_stats():
@@ -633,6 +634,7 @@ def get_traffic_evolution():
     period = request.args.get("period", "week")
     since  = _stats_since(period)
 
+    # label_expr is safe to interpolate: period is validated to an allowlist in _stats_since()
     label_expr = (
         "strftime('%H:00', ts, 'unixepoch', 'localtime')"
         if period == "day"
