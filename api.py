@@ -53,6 +53,15 @@ def _migrate():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_chanact_idx_ts ON channel_activity(channel_idx, ts DESC)"
     )
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS visit_log (
+      id  INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts  INTEGER NOT NULL,
+      ip  TEXT    NOT NULL,
+      ua  TEXT    NOT NULL DEFAULT ''
+    )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_visit_ts ON visit_log(ts DESC)")
     con.commit()
     con.close()
 
@@ -82,6 +91,16 @@ def _q(sql, params=()):
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return rows
+
+
+def _log_visit():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    ip = forwarded.split(",")[0].strip() if forwarded else (request.remote_addr or "")
+    ua = request.headers.get("User-Agent", "")[:400]
+    con = _con()
+    con.execute("INSERT INTO visit_log(ts, ip, ua) VALUES(?,?,?)", (int(time.time()), ip, ua))
+    con.commit()
+    con.close()
 
 
 def _resolve(node_id_or_name: str) -> str | None:
@@ -963,8 +982,34 @@ def get_activity_heatmap():
 
 FRONTEND_DIST = "/home/daniel/bbs/meshsentinel/frontend/dist"
 
+
+@app.get("/api/admin/visits")
+def admin_visits():
+    period = request.args.get("period", "daily")
+    if period == "monthly":
+        date_expr = "strftime('%Y-%m', ts, 'unixepoch', '-3 hours')"
+    elif period == "yearly":
+        date_expr = "strftime('%Y', ts, 'unixepoch', '-3 hours')"
+    else:
+        date_expr = "date(ts, 'unixepoch', '-3 hours')"
+
+    rows = _q(f"""
+        SELECT
+            {date_expr}      AS period,
+            ip,
+            COUNT(*)         AS visits,
+            MIN(ua)          AS ua,
+            MIN(ts)          AS first_ts,
+            MAX(ts)          AS last_ts
+        FROM visit_log
+        GROUP BY period, ip
+        ORDER BY period DESC, visits DESC
+    """)
+    return jsonify({"rows": rows})
+
 @app.get("/")
 def serve_index():
+    _log_visit()
     return send_from_directory(FRONTEND_DIST, "index.html")
 
 @app.get("/assets/<path:path>")

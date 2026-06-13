@@ -296,3 +296,13 @@ export interface TrackNodesResponse {
 export interface TrackPointsResponse {
   points: TrackPoint[];
 }
+
+export interface VisitRow {
+  period: string;
+  ip: string;
+  visits: number;
+  ua: string;
+  first_ts: number;
+  last_ts: number;
+}
+

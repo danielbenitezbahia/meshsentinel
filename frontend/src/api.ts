@@ -1,4 +1,4 @@
-import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse } from "./types";
+import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow } from "./types";
 
 export const API_BASE = "";
 
@@ -100,6 +100,12 @@ export async function fetchLocalities(): Promise<LocalitiesResponse> {
 
 export async function fetchEnergyDay(date: string): Promise<EnergyDayResponse> {
   const res = await fetch(`${API_BASE}/api/energy/day?date=${date}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchVisits(period: "daily" | "monthly" | "yearly"): Promise<{ rows: VisitRow[] }> {
+  const res = await fetch(`${API_BASE}/api/admin/visits?period=${period}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

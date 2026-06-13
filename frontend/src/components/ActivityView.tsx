@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { fetchActivityHeatmap, fetchActivityAlerts, fetchLocalities, fetchEnergyDay } from "../api";
-import type { ActivityHeatmapNode, ActivityAlert, Locality, NodeEnvMetrics, NodeEnergyData, EnergyReading } from "../types";
+import { fetchActivityHeatmap, fetchActivityAlerts, fetchLocalities, fetchEnergyDay, fetchVisits } from "../api";
+import type { ActivityHeatmapNode, ActivityAlert, Locality, NodeEnvMetrics, NodeEnergyData, EnergyReading, VisitRow } from "../types";
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const REFRESH_MS      = 15 * 60 * 1000;  // 15 min — refresca todo
@@ -216,6 +216,103 @@ function LocalitiesPanel({ localities, loading }: { localities: Locality[]; load
   );
 }
 
+// ── Visits modal ─────────────────────────────────────────────────────────────
+function parseUA(ua: string): string {
+  if (!ua) return "—";
+  const mob = /Android|iPhone|iPad|iPod/i.test(ua);
+  const browser =
+    /Edg\//i.test(ua)     ? "Edge" :
+    /OPR\//i.test(ua)     ? "Opera" :
+    /Chrome\//i.test(ua)  ? "Chrome" :
+    /Firefox\//i.test(ua) ? "Firefox" :
+    /Safari\//i.test(ua)  ? "Safari" : "otro";
+  const os =
+    /iPhone/i.test(ua)   ? "iPhone" :
+    /iPad/i.test(ua)     ? "iPad" :
+    /Android/i.test(ua)  ? "Android" :
+    /Windows/i.test(ua)  ? "Windows" :
+    /Mac OS/i.test(ua)   ? "macOS" :
+    /Linux/i.test(ua)    ? "Linux" : "otro";
+  return `${browser} · ${os}${mob ? " 📱" : ""}`;
+}
+
+function fmtTs(ts: number): string {
+  return new Date(ts * 1000).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function VisitsModal({ onClose }: { onClose: () => void }) {
+  const [period, setPeriod] = useState<"daily" | "monthly" | "yearly">("daily");
+  const [rows, setRows]     = useState<VisitRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchVisits(period)
+      .then(d => setRows(d.rows))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [period]);
+
+  // Group rows by period label
+  const grouped = rows.reduce<Record<string, VisitRow[]>>((acc, r) => {
+    (acc[r.period] ??= []).push(r);
+    return acc;
+  }, {});
+
+  const totalByPeriod = Object.fromEntries(
+    Object.entries(grouped).map(([p, rs]) => [p, rs.reduce((s, r) => s + r.visits, 0)])
+  );
+
+  return (
+    <div className="visits-backdrop" onClick={onClose}>
+      <div className="visits-modal" onClick={e => e.stopPropagation()}>
+        <div className="visits-header">
+          <span className="visits-title">Registro de visitas</span>
+          <div className="visits-tabs">
+            {(["daily", "monthly", "yearly"] as const).map(p => (
+              <button
+                key={p}
+                className={`visits-tab${period === p ? " visits-tab-active" : ""}`}
+                onClick={() => setPeriod(p)}
+              >
+                {p === "daily" ? "Diario" : p === "monthly" ? "Mensual" : "Anual"}
+              </button>
+            ))}
+          </div>
+          <button className="visits-close" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="visits-body">
+          {loading && <div className="visits-loading">Cargando...</div>}
+          {!loading && rows.length === 0 && <div className="visits-empty">Sin registros aún</div>}
+          {!loading && Object.entries(grouped).map(([p, pRows]) => (
+            <div key={p} className="visits-group">
+              <div className="visits-group-header">
+                <span className="visits-period">{p}</span>
+                <span className="visits-period-total">{totalByPeriod[p]} visita{totalByPeriod[p] !== 1 ? "s" : ""}</span>
+              </div>
+              <table className="visits-table">
+                <tbody>
+                  {pRows.map((r, i) => (
+                    <tr key={i} className="visits-row">
+                      <td className="visits-ip">{r.ip}</td>
+                      <td className="visits-count">{r.visits}×</td>
+                      <td className="visits-ua">{parseUA(r.ua)}</td>
+                      {period === "daily" && (
+                        <td className="visits-time">{fmtTs(r.first_ts)}{r.first_ts !== r.last_ts ? ` – ${fmtTs(r.last_ts)}` : ""}</td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main view ────────────────────────────────────────────────────────────────
 export default function ActivityView() {
   const [date, setDate]           = useState<string>(todayAR);
@@ -234,7 +331,9 @@ export default function ActivityView() {
   const [dayBounds, setDayBounds]       = useState<{ start: number; end: number } | null>(null);
   const [nodeSearch, setNodeSearch]     = useState("");
   const [tooltip, setTooltip]           = useState<{ text: string; x: number; y: number } | null>(null);
-  const nameTipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nameTipTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showVisits, setShowVisits]     = useState(false);
+  const analysisClicksRef = useRef<number[]>([]);
 
   const handleSlotHover = useCallback((text: string, e: React.MouseEvent) => {
     setTooltip({ text, x: e.clientX, y: e.clientY });
@@ -312,6 +411,16 @@ export default function ActivityView() {
     return () => { if (alertsTimerRef.current) clearInterval(alertsTimerRef.current); };
   }, [loadAlerts]);
 
+  const handleAnalysisClick = useCallback(() => {
+    const now = Date.now();
+    const recent = [...analysisClicksRef.current, now].filter(t => now - t < 3000);
+    analysisClicksRef.current = recent;
+    if (recent.length >= 5) {
+      analysisClicksRef.current = [];
+      setShowVisits(true);
+    }
+  }, []);
+
   // Recarga heatmap y energía cuando cambia la fecha (manual)
   useEffect(() => {
     loadHeatmap(date);
@@ -332,6 +441,7 @@ export default function ActivityView() {
     : null;
 
   return (
+    <>
     <div className="heatmap-view">
       {tooltip && (
         <div className="hm-tooltip" style={{ left: tooltip.x + 12, top: tooltip.y - 36 }}>
@@ -407,7 +517,7 @@ export default function ActivityView() {
         {/* Col 2: Alertas (25%) */}
         <div className="alerts-panel">
           <div className="alerts-panel-header">
-            <span className="alerts-panel-title">Análisis · 24h</span>
+            <span className="alerts-panel-title" onClick={handleAnalysisClick} style={{ cursor: "default", userSelect: "none" }}>Análisis · 24h</span>
             {loadingAlerts && <span className="alerts-spinner">↻</span>}
             {checkedLabel && !loadingAlerts && (
               <span className="alerts-checked-at">{checkedLabel}</span>
@@ -432,5 +542,8 @@ export default function ActivityView() {
 
       </div>
     </div>
+
+    {showVisits && <VisitsModal onClose={() => setShowVisits(false)} />}
+    </>
   );
 }

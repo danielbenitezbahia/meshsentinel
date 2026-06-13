@@ -2260,10 +2260,10 @@ export default function MeshWarsView() {
     background: disabled ? "transparent" : `${color}18`,
     color: disabled ? "#1e2d3d" : color,
     border: `1px solid ${disabled ? "#0d1a28" : color}`,
-    borderRadius: 2, padding: "8px 16px",
-    fontFamily: "monospace", fontWeight: 700, fontSize: 13,
+    borderRadius: 2, padding: isMobile ? "6px 8px" : "8px 16px",
+    fontFamily: "monospace", fontWeight: 700, fontSize: isMobile ? 11 : 13,
     cursor: disabled ? "not-allowed" : "pointer",
-    letterSpacing: 2, minWidth: 80,
+    letterSpacing: isMobile ? 1 : 2, minWidth: isMobile ? 52 : 80,
     boxShadow: disabled ? "none" : `0 0 10px ${color}55`,
     textTransform: "uppercase" as const,
   });
@@ -2802,8 +2802,9 @@ export default function MeshWarsView() {
 
         {/* Center: buttons */}
         <div style={{
-          flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-          gap: 8, borderRight: "1px solid #0a1828", padding: isMobile ? "6px 8px" : "0 12px", flexDirection: "column",
+          flex: isMobile ? 3 : 1, display: "flex", alignItems: "center", justifyContent: "center",
+          gap: 8, borderRight: "1px solid #0a1828", padding: isMobile ? "6px 8px" : "0 12px",
+          flexDirection: "column", overflowY: "auto",
         }}>
           {isMobile && gs && (
             <div style={{
@@ -2869,7 +2870,7 @@ export default function MeshWarsView() {
 
         {/* Right: card flash or combat info */}
         <div ref={rightScrollRef} style={{
-          flex: 1, padding: isMobile ? "6px 8px 10px" : "10px 16px 22px", display: "flex", flexDirection: "column",
+          flex: isMobile ? 2 : 1, padding: isMobile ? "6px 8px 10px" : "10px 16px 22px", display: "flex", flexDirection: "column",
           justifyContent: "flex-start", overflowY: "auto", background: "#080612",
           position: "relative",
         }}>
