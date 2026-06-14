@@ -718,6 +718,7 @@ def get_node_events():
 
 @app.get("/api/activity/localities")
 def get_activity_localities():
+    one_hour_ago = int(time.time()) - 3600
     nodes = _q("""
         SELECT node_id, short_name, long_name, partido, lat, lon, last_seen_ts
         FROM node_stats
@@ -732,9 +733,11 @@ def get_activity_localities():
         FROM environment_metrics e
         INNER JOIN (
             SELECT node_id, MAX(ts) AS max_ts
-            FROM environment_metrics GROUP BY node_id
+            FROM environment_metrics
+            WHERE ts >= ?
+            GROUP BY node_id
         ) latest ON e.node_id = latest.node_id AND e.ts = latest.max_ts
-    """, ())
+    """, (one_hour_ago,))
     env_map = {r["node_id"]: r for r in env_rows}
 
     partidos: dict = {}
