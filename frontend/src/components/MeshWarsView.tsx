@@ -375,6 +375,13 @@ function buildCells(cellMap: Map<string, MeshNode>): Record<string, GameCell> {
     if (candidate) growIsland(candidate, 8, 9);
   }
 
+  // Safety cleanup: remove any island with < 3 cells that survived capping or failed synthetic expansion
+  for (const comp of findComponents(Object.keys(cells))) {
+    if (comp.length < 3) {
+      for (const id of comp) { delete cells[id]; occupied.delete(id); }
+    }
+  }
+
   return cells;
 }
 
@@ -1069,10 +1076,36 @@ function initGame(nodes: MeshNode[], difficulty: Difficulty = "medium"): GameSta
   };
 
   const cellMap = new Map<string, MeshNode>();
+  const displaced: MeshNode[] = [];
+
+  // First pass: best-SNR node wins its natural H3 cell; losers go to displaced list
   for (const node of active) {
     const cid  = latLngToCell(node.lat!, node.lon!, H3_RES);
     const prev = cellMap.get(cid);
-    if (!prev || (node.snr_from_bbs ?? -999) > (prev.snr_from_bbs ?? -999)) cellMap.set(cid, node);
+    if (!prev) {
+      cellMap.set(cid, node);
+    } else if ((node.snr_from_bbs ?? -999) > (prev.snr_from_bbs ?? -999)) {
+      cellMap.set(cid, node);
+      displaced.push(prev);
+    } else {
+      displaced.push(node);
+    }
+  }
+
+  // Second pass: place displaced nodes in the nearest free direct neighbor (ring-1 only).
+  // Ring-1 guarantees the displaced node is H3-adjacent to the winner's cell,
+  // forming a 2-cell island that buildCells can safely extend with synthetics.
+  for (const node of displaced) {
+    const cid  = latLngToCell(node.lat!, node.lon!, H3_RES);
+    const free = gridDisk(cid, 1).filter(nb => nb !== cid && !cellMap.has(nb));
+    if (!free.length) continue;
+    const closest = free.reduce((best, nb) => {
+      const [bLat, bLon] = cellToLatLng(best);
+      const [nLat, nLon] = cellToLatLng(nb);
+      return haversineKm(node.lat!, node.lon!, nLat, nLon) <
+             haversineKm(node.lat!, node.lon!, bLat, bLon) ? nb : best;
+    });
+    cellMap.set(closest, node);
   }
 
   const cells    = buildCells(cellMap);
