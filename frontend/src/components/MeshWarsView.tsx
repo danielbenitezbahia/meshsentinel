@@ -1349,6 +1349,9 @@ export default function MeshWarsView() {
   const lastCensusTurnRef      = useRef(-1);
   const loseAllTimerRef        = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingEventRef        = useRef<GameEvent | null>(null);
+  const forceEventRef          = useRef(false);
+  const logClickTimesRef       = useRef<number[]>([]);
+  const [forceEventActive, setForceEventActive] = useState(false);
   const [eventBanner, setEventBanner] = useState<GameEvent | null>(null);
   const pendingRechargeRef     = useRef<string | null>(null);
   const prevCardsRef           = useRef(0);
@@ -1421,8 +1424,16 @@ export default function MeshWarsView() {
         mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.45 });
       }
     }
-    if (event.type === "done" && aiFinalRef.current)
-      pendingEventRef.current = generateEvent(aiFinalRef.current.cells, aiFinalRef.current.turn);
+    if (event.type === "done" && aiFinalRef.current) {
+      let ev = generateEvent(aiFinalRef.current.cells, aiFinalRef.current.turn);
+      if (forceEventRef.current) {
+        forceEventRef.current = false;
+        let tries = 0;
+        while (!ev && tries++ < 30)
+          ev = generateEvent(aiFinalRef.current.cells, aiFinalRef.current.turn);
+      }
+      pendingEventRef.current = ev;
+    }
 
     if (event.type === "production_announce") {
       SFX.productionAnnounce();
@@ -1536,14 +1547,7 @@ export default function MeshWarsView() {
 
           case "done": {
             const f = aiFinalRef.current!;
-            let finalCells = f.cells;
-            if (capturedEvent?.affectedCells?.length) {
-              const nc = { ...finalCells };
-              for (const [cellId, delta] of Object.entries(capturedEvent.deltas)) {
-                if (nc[cellId]) nc[cellId] = { ...nc[cellId], troops: Math.max(1, nc[cellId].troops + delta) };
-              }
-              finalCells = nc;
-            }
+            const finalCells = f.cells;
             let newCards = f.playerCards;
             let newPending = prev.pendingCard;
             if (prev.wonCellThisTurn) {
@@ -1601,7 +1605,38 @@ export default function MeshWarsView() {
     const [lat, lon] = cellToLatLng(ev.targetCell);
     mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.45 });
     const blinkColor = ev.type === "POSITIVE" ? "#00e976" : "#ff1744";
+    // blink starts at 500ms, lasts 5*(220+170)=1950ms → ends ~2450ms
     setTimeout(() => runEventBlink(ev.affectedCells, blinkColor, polygonsRef.current), 500);
+    // apply deltas after blink finishes
+    setTimeout(() => {
+      if (ev.type === "POSITIVE") {
+        playTone(880, 0.06, "sine", 0.10);
+        setTimeout(() => playTone(1100, 0.09, "sine", 0.13), 80);
+      } else {
+        playTone(200, 0.08, "sawtooth", 0.12);
+        setTimeout(() => playTone(150, 0.10, "sawtooth", 0.10), 80);
+      }
+      const factionBg = (mapRef.current?.getZoom() ?? 12) < HEX_VISIBLE_ZOOM;
+      setGs(prev => {
+        if (!prev) return prev;
+        const nc = { ...prev.cells };
+        for (const [cellId, delta] of Object.entries(ev.deltas)) {
+          if (nc[cellId]) nc[cellId] = { ...nc[cellId], troops: Math.max(1, nc[cellId].troops + (delta as number)) };
+        }
+        return { ...prev, cells: nc };
+      });
+      // update Leaflet markers imperatively (gsRef still holds pre-delta state here)
+      for (const [cellId, delta] of Object.entries(ev.deltas)) {
+        const marker = troopMarkersRef.current.get(cellId);
+        const cell   = gsRef.current?.cells[cellId];
+        if (!marker || !cell) continue;
+        const newTroops = Math.max(1, cell.troops + (delta as number));
+        marker.setIcon(L.divIcon({
+          className: "", iconSize: [0, 0], iconAnchor: [0, 0],
+          html: troopMarkerHtml(newTroops, cell.isProduction, COLORS[cell.owner], factionBg),
+        }));
+      }
+    }, 2550);
   }
 
   function triggerLoseAll() {
@@ -2779,7 +2814,20 @@ export default function MeshWarsView() {
         }}>
           {/* Panel label */}
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexShrink: 0, paddingRight: 10 }}>
-            <span style={{ color: "#00e5ff", fontFamily: "monospace", fontSize: 9, letterSpacing: 3, fontWeight: 700 }}>[ LOG ]</span>
+            <span
+              style={{ color: forceEventActive ? "#ffd740" : "#00e5ff", fontFamily: "monospace", fontSize: 9, letterSpacing: 3, fontWeight: 700, cursor: "default", userSelect: "none", textShadow: forceEventActive ? "0 0 8px #ffd740" : "none" }}
+              onClick={() => {
+                const now = Date.now();
+                const recent = [...logClickTimesRef.current, now].filter(t => now - t < 5000);
+                logClickTimesRef.current = recent;
+                if (recent.length >= 5) {
+                  logClickTimesRef.current = [];
+                  forceEventRef.current = true;
+                  setForceEventActive(true);
+                  setTimeout(() => setForceEventActive(false), 2000);
+                }
+              }}
+            >{forceEventActive ? "[ EVT ]" : "[ LOG ]"}</span>
             <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg, #00e5ff55, transparent)" }} />
           </div>
           {/* Current event — large + highlighted */}
