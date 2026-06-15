@@ -837,6 +837,34 @@ function runBombFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
   setTimeout(() => poly.setStyle(saved), BLINKS * PERIOD + 50);
 }
 
+// Extended blink for game events — ~2 s, color by event type
+function runEventBlink(cellIds: string[], color: string, polygons: Map<string, L.Polygon>): void {
+  const entries = cellIds.flatMap(id => {
+    const p = polygons.get(id);
+    if (!p) return [];
+    return [{ poly: p, saved: {
+      fillColor:   (p.options as any).fillColor   as string,
+      fillOpacity: (p.options as any).fillOpacity as number,
+      color:       (p.options as any).color       as string,
+      weight:      (p.options as any).weight      as number,
+    }}];
+  });
+  if (!entries.length) return;
+  const CYCLES = 5;
+  const ON_MS  = 220;
+  const OFF_MS = 170;
+  let cycle = 0;
+  function tick() {
+    entries.forEach(({ poly }) => poly.setStyle({ fillColor: color, fillOpacity: 0.85, color, weight: 2 }));
+    setTimeout(() => {
+      entries.forEach(({ poly, saved }) => poly.setStyle(saved));
+      cycle++;
+      if (cycle < CYCLES) setTimeout(tick, OFF_MS);
+    }, ON_MS);
+  }
+  tick();
+}
+
 // Defender: full-cell red fill flash (soft/blurred effect)
 function runRoundFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
   const poly = polygons.get(cellId);
@@ -1541,10 +1569,6 @@ export default function MeshWarsView() {
 
       if (capturedEvent) {
         setEventBanner(capturedEvent);
-        if (capturedEvent.targetCell && mapRef.current) {
-          const [lat, lon] = cellToLatLng(capturedEvent.targetCell);
-          mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.5 });
-        }
         if (capturedEvent.type === "POSITIVE") {
           playTone(523, 0.1, "sine", 0.10);
           setTimeout(() => playTone(659, 0.12, "sine", 0.12), 110);
@@ -1569,6 +1593,16 @@ export default function MeshWarsView() {
   }, [gs?.phase, gs?.aiQueue?.length]);
 
   useEffect(() => { if (!cardFlash) setSelectedCards([]); }, [cardFlash]);
+
+  function dismissEventBanner() {
+    const ev = eventBanner;
+    setEventBanner(null);
+    if (!ev || !mapRef.current) return;
+    const [lat, lon] = cellToLatLng(ev.targetCell);
+    mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.45 });
+    const blinkColor = ev.type === "POSITIVE" ? "#00e976" : "#ff1744";
+    setTimeout(() => runEventBlink(ev.affectedCells, blinkColor, polygonsRef.current), 500);
+  }
 
   function triggerLoseAll() {
     setLoseAllFlash(true);
@@ -2463,7 +2497,7 @@ export default function MeshWarsView() {
           const sevDots = eventBanner.severity === "MINOR" ? "█ □ □" : eventBanner.severity === "MEDIUM" ? "█ █ □" : "█ █ █";
           return (
             <>
-              <div style={{ position: "absolute", inset: 0, zIndex: 1500, background: "rgba(0,0,0,0.55)" }} onClick={() => setEventBanner(null)} />
+              <div style={{ position: "absolute", inset: 0, zIndex: 1500, background: "rgba(0,0,0,0.55)" }} onClick={dismissEventBanner} />
               <div style={{
                 position: "absolute", top: "18%", left: "50%", transform: "translateX(-50%)",
                 zIndex: 1600, background: "#060d14",
@@ -2505,7 +2539,7 @@ export default function MeshWarsView() {
                   <p style={{ color: "#b8cfe0", fontSize: 13, lineHeight: 1.75, margin: "0 0 18px", paddingLeft: 15 }}>
                     {eventBanner.description}
                   </p>
-                  <button onClick={() => setEventBanner(null)} style={{ ...btnStyle(tColor), width: "100%", fontSize: 12, padding: "9px" }}>
+                  <button onClick={dismissEventBanner} style={{ ...btnStyle(tColor), width: "100%", fontSize: 12, padding: "9px" }}>
                     ENTENDIDO
                   </button>
                 </div>
