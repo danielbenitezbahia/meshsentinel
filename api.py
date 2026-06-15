@@ -10,10 +10,13 @@ Endpoints:
 
 import calendar
 import datetime
+import ipaddress
 import json
 import math
 import time
 import sqlite3
+import urllib.request
+import urllib.error
 from flask import Flask, jsonify, abort, request, send_from_directory
 from flask_cors import CORS
 
@@ -62,10 +65,62 @@ def _migrate():
     )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_visit_ts ON visit_log(ts DESC)")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS game_log (
+      id  INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts  INTEGER NOT NULL,
+      ip  TEXT    NOT NULL
+    )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_game_ts ON game_log(ts DESC)")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS ip_country (
+      ip          TEXT PRIMARY KEY,
+      country     TEXT NOT NULL DEFAULT '??',
+      fetched_ts  INTEGER NOT NULL
+    )
+    """)
     con.commit()
     con.close()
 
 _migrate()
+
+
+def _get_country(ip: str) -> str:
+    """Returns ISO-3166 2-letter country code. Caches in ip_country table. Returns 'LO' for local IPs."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            return "LO"
+    except ValueError:
+        return "??"
+
+    con = _con()
+    row = con.execute("SELECT country FROM ip_country WHERE ip = ?", (ip,)).fetchone()
+    if row:
+        con.close()
+        return row[0]
+
+    country = "??"
+    try:
+        req = urllib.request.urlopen(
+            f"http://ip-api.com/json/{ip}?fields=countryCode", timeout=4
+        )
+        data = json.loads(req.read())
+        country = data.get("countryCode", "??") or "??"
+    except Exception:
+        pass
+
+    try:
+        con.execute(
+            "INSERT OR REPLACE INTO ip_country(ip, country, fetched_ts) VALUES(?,?,?)",
+            (ip, country, int(time.time()))
+        )
+        con.commit()
+    except Exception:
+        pass
+    con.close()
+    return country
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -1010,7 +1065,49 @@ def admin_visits():
         GROUP BY period, ip
         ORDER BY period DESC, visits DESC
     """)
+    country_map = {r["ip"]: _get_country(r["ip"]) for r in {r["ip"]: r for r in rows}.values()}
+    for r in rows:
+        r["country"] = country_map[r["ip"]]
     return jsonify({"rows": rows})
+
+
+@app.post("/api/admin/game")
+def admin_game_log():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    ip = forwarded.split(",")[0].strip() if forwarded else (request.remote_addr or "")
+    con = _con()
+    con.execute("INSERT INTO game_log(ts, ip) VALUES(?,?)", (int(time.time()), ip))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/admin/games")
+def admin_games():
+    period = request.args.get("period", "daily")
+    if period == "monthly":
+        date_expr = "strftime('%Y-%m', ts, 'unixepoch', '-3 hours')"
+    elif period == "yearly":
+        date_expr = "strftime('%Y', ts, 'unixepoch', '-3 hours')"
+    else:
+        date_expr = "date(ts, 'unixepoch', '-3 hours')"
+
+    rows = _q(f"""
+        SELECT
+            {date_expr}  AS period,
+            ip,
+            COUNT(*)     AS games,
+            MIN(ts)      AS first_ts,
+            MAX(ts)      AS last_ts
+        FROM game_log
+        GROUP BY period, ip
+        ORDER BY period DESC, games DESC
+    """)
+    country_map = {r["ip"]: _get_country(r["ip"]) for r in {r["ip"]: r for r in rows}.values()}
+    for r in rows:
+        r["country"] = country_map[r["ip"]]
+    return jsonify({"rows": rows})
+
 
 @app.get("/")
 def serve_index():

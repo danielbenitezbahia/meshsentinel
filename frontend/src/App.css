@@ -990,12 +990,40 @@ body, #root {
   flex-shrink: 0;
 }
 
-.visits-title {
+.visits-section-tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+}
+
+.visits-section-tab {
+  background: none;
+  border: none;
+  color: #37515f;
+  font-family: inherit;
   font-size: 13px;
   font-weight: 700;
-  color: #64b5f6;
+  padding: 2px 10px 2px 0;
+  cursor: pointer;
   letter-spacing: 0.5px;
-  flex: 1;
+}
+
+.visits-section-tab-active {
+  color: #64b5f6;
+}
+
+.visits-row-repeat {
+  background: #0d1e2a;
+}
+.visits-row-repeat:hover { background: #112233; }
+.visits-row-repeat .visits-ip { color: #ffb74d; }
+
+.visits-repeat-badge {
+  padding: 5px 8px;
+  font-size: 10px;
+  color: #ff8f00;
+  white-space: nowrap;
+  font-style: italic;
 }
 
 .visits-tabs {
@@ -1082,8 +1110,15 @@ body, #root {
 }
 .visits-row:hover { background: #0d2137; }
 
+.visits-country {
+  padding: 5px 4px 5px 16px;
+  font-size: 14px;
+  width: 28px;
+  text-align: center;
+}
+
 .visits-ip {
-  padding: 5px 16px;
+  padding: 5px 8px;
   font-size: 12px;
   color: #90caf9;
   font-variant-numeric: tabular-nums;

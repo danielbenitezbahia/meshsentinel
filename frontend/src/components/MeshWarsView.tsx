@@ -7,7 +7,7 @@ import { cellNeighbors, nnSort } from "../ai/utils";
 import { pickReinforcementPool, pickAttack as pickFactionAttack } from "../ai/index";
 import { generateEvent } from "../ai/events";
 import type { GameEvent } from "../ai/events";
-import { fetchGraph } from "../api";
+import { fetchGraph, logGame } from "../api";
 import type { MeshNode } from "../types";
 
 const ACTIVE_MINS    = 120;
@@ -1338,6 +1338,7 @@ export default function MeshWarsView() {
     if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
 
     const event = gs.aiQueue[0];
+    let reinforceCellInView = false;
 
     // Immediate side effects (sound + map pan)
     if (event.type === "attack_round") {
@@ -1351,13 +1352,13 @@ export default function MeshWarsView() {
       attackOverlayRef.current = null;
     }
     if (event.type === "reinforce") {
-      if (mapRef.current) {
-        const [lat, lon] = cellToLatLng(event.cellId);
+      const [lat, lon] = cellToLatLng(event.cellId);
+      reinforceCellInView = mapRef.current?.getBounds().contains([lat, lon]) ?? false;
+      if (mapRef.current && !reinforceCellInView)
         mapRef.current.flyTo([lat, lon], 12, { animate: true, duration: 0.45 });
-      }
-      // Wait for flyTo to finish + small pause, then show the reinforcement
       const cellId = event.cellId;
       const newTroops = event.troops;
+      // If already visible: flash immediately; if panning: wait for flyTo (450ms) + small buffer
       setTimeout(() => {
         SFX.reinforce();
         runRechargeFlash(cellId, polygonsRef.current);
@@ -1365,7 +1366,7 @@ export default function MeshWarsView() {
         const marker = troopMarkersRef.current.get(cellId);
         if (marker && cell)
           marker.setIcon(L.divIcon({ className: "", html: troopMarkerHtml(newTroops, cell.isProduction, COLORS[cell.owner], (mapRef.current?.getZoom() ?? 12) < HEX_VISIBLE_ZOOM), iconSize: [0, 0], iconAnchor: [0, 0] }));
-      }, 580); // 450ms flyTo + 130ms pause
+      }, reinforceCellInView ? 30 : 480);
     }
     if (event.type === "census_start" && mapRef.current)
       runCensusFlash(event.cellIds, polygonsRef.current, mapRef.current);
@@ -1421,7 +1422,7 @@ export default function MeshWarsView() {
     else if (event.type === "ai_card_draw")         delay = 1000;
     else if (event.type === "ai_card_trade")        delay = 1600;
     else if (event.type === "ai_bomb_attack")       delay = 2000;
-    else if (event.type === "reinforce")            delay = 930;
+    else if (event.type === "reinforce")            delay = reinforceCellInView ? 200 : 550;
     else if (event.type === "attack_announce")      delay = 1100;
     else if (event.type === "attack_result")        delay = 700;
     else if (event.type === "production_announce")  delay = 3000;
@@ -2276,7 +2277,7 @@ export default function MeshWarsView() {
   const canCancel      = gs ? !["action", "reinforcement", "post_conquest", "ai_turn", "game_over"].includes(gs.phase) : false;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 36px)", background: "#1a2332" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 46px)", background: "#1a2332" }}>
 
       {/* Map area */}
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
@@ -2677,8 +2678,7 @@ export default function MeshWarsView() {
               fontFamily: "monospace", color: "#00e676", fontSize: isMobile ? 13 : 19, lineHeight: 1.9,
               whiteSpace: "pre-wrap", maxWidth: 680, width: "100%",
               textShadow: "0 0 8px #00e67666",
-              overflowY: "hidden", maxHeight: "75vh",
-              paddingBottom: introState === "done" ? "100px" : "0",
+              overflowY: "auto", maxHeight: isMobile ? "60vh" : "75vh",
               boxSizing: "border-box",
             }}>
               {INTRO_TEXT.slice(0, introChars)}
@@ -2702,7 +2702,11 @@ export default function MeshWarsView() {
             )}
             {introState === "done" && (
               <button
-                style={{ ...btnStyle("#c62828"), position: "absolute", bottom: 40, left: "50%", transform: "translateX(-50%)" }}
+                style={{
+                  ...btnStyle("#c62828"),
+                  marginTop: 24,
+                  ...(isMobile ? {} : { position: "absolute", bottom: 40, left: "50%", transform: "translateX(-50%)" }),
+                }}
                 onClick={() => {
                   if (tutorialMode) {
                     setTutorialSlide(0);
@@ -2711,6 +2715,7 @@ export default function MeshWarsView() {
                     introStopRef.current?.();
                     introStopRef.current = null;
                     setIntroState("start");
+                    logGame();
                     startGame();
                   }
                 }}

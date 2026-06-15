@@ -304,5 +304,15 @@ export interface VisitRow {
   ua: string;
   first_ts: number;
   last_ts: number;
+  country?: string;
+}
+
+export interface GameRow {
+  period: string;
+  ip: string;
+  games: number;
+  first_ts: number;
+  last_ts: number;
+  country?: string;
 }
 

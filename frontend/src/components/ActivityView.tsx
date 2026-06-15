@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { fetchActivityHeatmap, fetchActivityAlerts, fetchLocalities, fetchEnergyDay, fetchVisits } from "../api";
-import type { ActivityHeatmapNode, ActivityAlert, Locality, NodeEnvMetrics, NodeEnergyData, EnergyReading, VisitRow } from "../types";
+import { fetchActivityHeatmap, fetchActivityAlerts, fetchLocalities, fetchEnergyDay, fetchVisits, fetchGames } from "../api";
+import type { ActivityHeatmapNode, ActivityAlert, Locality, NodeEnvMetrics, NodeEnergyData, EnergyReading, VisitRow, GameRow } from "../types";
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const REFRESH_MS      = 15 * 60 * 1000;  // 15 min — refresca todo
@@ -240,34 +240,72 @@ function fmtTs(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
 }
 
+function countryFlag(code?: string): string {
+  if (!code || code.length !== 2) return "—";
+  if (code === "LO") return "🏠";
+  const a = code.charCodeAt(0) - 65;
+  const b = code.charCodeAt(1) - 65;
+  if (a < 0 || a > 25 || b < 0 || b > 25) return code;
+  return (
+    String.fromCodePoint(0x1F1E6 + a) +
+    String.fromCodePoint(0x1F1E6 + b)
+  );
+}
+
 function VisitsModal({ onClose }: { onClose: () => void }) {
+  const [section, setSection] = useState<"visits" | "games">("visits");
   const [period, setPeriod] = useState<"daily" | "monthly" | "yearly">("daily");
-  const [rows, setRows]     = useState<VisitRow[]>([]);
+  const [rows, setRows]       = useState<VisitRow[]>([]);
+  const [gameRows, setGameRows] = useState<GameRow[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     setLoading(true);
-    fetchVisits(period)
-      .then(d => setRows(d.rows))
-      .catch(() => setRows([]))
-      .finally(() => setLoading(false));
-  }, [period]);
+    if (section === "visits") {
+      fetchVisits(period)
+        .then(d => setRows(d.rows))
+        .catch(() => setRows([]))
+        .finally(() => setLoading(false));
+    } else {
+      fetchGames(period)
+        .then(d => setGameRows(d.rows))
+        .catch(() => setGameRows([]))
+        .finally(() => setLoading(false));
+    }
+  }, [period, section]);
 
-  // Group rows by period label
+  // Group visit rows by period label
   const grouped = rows.reduce<Record<string, VisitRow[]>>((acc, r) => {
     (acc[r.period] ??= []).push(r);
     return acc;
   }, {});
-
   const totalByPeriod = Object.fromEntries(
     Object.entries(grouped).map(([p, rs]) => [p, rs.reduce((s, r) => s + r.visits, 0)])
+  );
+
+  // Group game rows by period label
+  const gameGrouped = gameRows.reduce<Record<string, GameRow[]>>((acc, r) => {
+    (acc[r.period] ??= []).push(r);
+    return acc;
+  }, {});
+  const gameTotalByPeriod = Object.fromEntries(
+    Object.entries(gameGrouped).map(([p, rs]) => [p, rs.reduce((s, r) => s + r.games, 0)])
   );
 
   return (
     <div className="visits-backdrop" onClick={onClose}>
       <div className="visits-modal" onClick={e => e.stopPropagation()}>
         <div className="visits-header">
-          <span className="visits-title">Registro de visitas</span>
+          <div className="visits-section-tabs">
+            <button
+              className={`visits-section-tab${section === "visits" ? " visits-section-tab-active" : ""}`}
+              onClick={() => setSection("visits")}
+            >Visitas</button>
+            <button
+              className={`visits-section-tab${section === "games" ? " visits-section-tab-active" : ""}`}
+              onClick={() => setSection("games")}
+            >Partidas</button>
+          </div>
           <div className="visits-tabs">
             {(["daily", "monthly", "yearly"] as const).map(p => (
               <button
@@ -284,8 +322,10 @@ function VisitsModal({ onClose }: { onClose: () => void }) {
 
         <div className="visits-body">
           {loading && <div className="visits-loading">Cargando...</div>}
-          {!loading && rows.length === 0 && <div className="visits-empty">Sin registros aún</div>}
-          {!loading && Object.entries(grouped).map(([p, pRows]) => (
+
+          {/* Visits section */}
+          {!loading && section === "visits" && rows.length === 0 && <div className="visits-empty">Sin registros aún</div>}
+          {!loading && section === "visits" && Object.entries(grouped).map(([p, pRows]) => (
             <div key={p} className="visits-group">
               <div className="visits-group-header">
                 <span className="visits-period">{p}</span>
@@ -295,9 +335,37 @@ function VisitsModal({ onClose }: { onClose: () => void }) {
                 <tbody>
                   {pRows.map((r, i) => (
                     <tr key={i} className="visits-row">
+                      <td className="visits-country">{countryFlag(r.country)}</td>
                       <td className="visits-ip">{r.ip}</td>
                       <td className="visits-count">{r.visits}×</td>
                       <td className="visits-ua">{parseUA(r.ua)}</td>
+                      {period === "daily" && (
+                        <td className="visits-time">{fmtTs(r.first_ts)}{r.first_ts !== r.last_ts ? ` – ${fmtTs(r.last_ts)}` : ""}</td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+
+          {/* Games section */}
+          {!loading && section === "games" && gameRows.length === 0 && <div className="visits-empty">Sin partidas aún</div>}
+          {!loading && section === "games" && Object.entries(gameGrouped).map(([p, pRows]) => (
+            <div key={p} className="visits-group">
+              <div className="visits-group-header">
+                <span className="visits-period">{p}</span>
+                <span className="visits-period-total">{gameTotalByPeriod[p]} partida{gameTotalByPeriod[p] !== 1 ? "s" : ""}</span>
+              </div>
+              <table className="visits-table">
+                <tbody>
+                  {pRows.map((r, i) => (
+                    <tr key={i} className={`visits-row${r.games > 1 ? " visits-row-repeat" : ""}`}>
+                      <td className="visits-country">{countryFlag(r.country)}</td>
+                      <td className="visits-ip">{r.ip}</td>
+                      <td className="visits-count">{r.games}×</td>
+                      {r.games > 1 && <td className="visits-repeat-badge">volvió a jugar</td>}
+                      {r.games === 1 && <td></td>}
                       {period === "daily" && (
                         <td className="visits-time">{fmtTs(r.first_ts)}{r.first_ts !== r.last_ts ? ` – ${fmtTs(r.last_ts)}` : ""}</td>
                       )}
