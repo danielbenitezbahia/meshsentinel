@@ -2385,6 +2385,8 @@ export default function MeshWarsView() {
               fontFamily: "monospace",
               minWidth: isMobile ? 190 : 240,
               boxShadow: "0 0 24px #00e5ff18, 0 4px 20px rgba(0,0,0,0.6), inset 0 0 40px rgba(0,230,255,0.03)",
+              transform: "scale(0.75)",
+              transformOrigin: "top left",
             }}>
               {/* Gradient top accent */}
               <div style={{ height: 2, background: "linear-gradient(90deg, #00e5ff, #aa00ff, #ff0099)" }} />
@@ -2747,7 +2749,7 @@ export default function MeshWarsView() {
               fontFamily: "monospace", color: "#00e676", fontSize: isMobile ? 13 : 19, lineHeight: 1.9,
               whiteSpace: "pre-wrap", maxWidth: 680, width: "100%",
               textShadow: "0 0 8px #00e67666",
-              overflowY: "auto", maxHeight: isMobile ? "60vh" : "75vh",
+              overflowY: "auto", maxHeight: isMobile ? "60vh" : "75vh", scrollbarWidth: "none",
               boxSizing: "border-box",
             }}>
               {INTRO_TEXT.slice(0, introChars)}
