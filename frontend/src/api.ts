@@ -1,4 +1,4 @@
-import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow, GameRow } from "./types";
+import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow, GameRow, MovingNode } from "./types";
 
 export const API_BASE = "";
 
@@ -118,4 +118,13 @@ export async function fetchGames(period: "daily" | "monthly" | "yearly"): Promis
   const res = await fetch(`${API_BASE}/api/admin/games?period=${period}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+export async function fetchMovingNodes(): Promise<MovingNode[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/mesh/moving`);
+    if (!res.ok) return [];
+    const d = await res.json();
+    return d.nodes ?? [];
+  } catch { return []; }
 }

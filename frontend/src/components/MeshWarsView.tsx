@@ -7,7 +7,7 @@ import { cellNeighbors, nnSort } from "../ai/utils";
 import { pickReinforcementPool, pickAttack as pickFactionAttack } from "../ai/index";
 import { generateEvent } from "../ai/events";
 import type { GameEvent } from "../ai/events";
-import { fetchGraph, logGame } from "../api";
+import { fetchGraph, logGame, fetchMovingNodes } from "../api";
 import type { MeshNode } from "../types";
 
 const ACTIVE_MINS    = 120;
@@ -111,6 +111,21 @@ interface GameCell {
 }
 
 interface Bridge { fromH3: string; toH3: string }
+
+type PatrolUnit = {
+  nodeId:  string;
+  name:    string;
+  h3Index: string;
+  troops:  number;
+  lat:     number;
+  lon:     number;
+};
+
+type PatrolVisual = {
+  core:  L.Circle;
+  label: L.Marker;
+  rings: L.Circle[];
+};
 
 interface GameState {
   cells:              Record<string, GameCell>;
@@ -675,6 +690,25 @@ const SFX = {
     setTimeout(() => playTone(550, 0.07, "sine", 0.12), 80);
     setTimeout(() => playTone(660, 0.12, "sine", 0.10), 165);
   },
+  patrolDrain: () => {
+    playTone(120, 0.3, "sawtooth", 0.18);
+    setTimeout(() => playTone(90,  0.3, "sawtooth", 0.15), 120);
+    setTimeout(() => playTone(60,  0.4, "sawtooth", 0.12), 280);
+  },
+  patrolHit: () => {
+    playTone(800, 0.04, "square", 0.14);
+    setTimeout(() => playTone(600, 0.05, "square", 0.10), 60);
+  },
+  patrolDestroyed: () => {
+    [440, 554, 659, 880, 1108, 1318].forEach((f, i) =>
+      setTimeout(() => playTone(f, 0.15, "square", 0.13), i * 80)
+    );
+    setTimeout(() => {
+      [880, 1108, 1318, 1760].forEach((f, j) =>
+        setTimeout(() => playTone(f, 0.2, "sine", 0.10), j * 100)
+      );
+    }, 600);
+  },
 };
 
 function playDiffSound(d: Difficulty) {
@@ -797,12 +831,21 @@ function hexEdgePoint(
   return from;
 }
 
-const HEX_VISIBLE_ZOOM = 11;
+const HEX_VISIBLE_ZOOM  = 11;
+const PATROL_CORE_R     = 500;   // meters — ~40% of cell diameter, clearly inside one hex
+const PATROL_WAVE_MAX_R = 4500;  // meters — comfortably reaches ring-2 neighbors (~4.2 km)
 
 function troopMarkerHtml(troops: number, isProduction: boolean, ownerColor: string, factionBg = false): string {
   const bg     = factionBg ? ownerColor : "rgba(0,0,0,0.6)";
   const border = factionBg ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.55)";
   return `<div style="background:${bg};color:#fff;font-size:13px;font-weight:700;font-family:monospace;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid ${border};pointer-events:none;transform:translate(-50%,-50%);position:relative;">${troops}${isProduction ? '<span style="color:#ffd700;font-size:8px;position:absolute;top:-2px;right:-2px">★</span>' : ""}</div>`;
+}
+
+function patrolLabelHtml(troops: number): string {
+  return `<div style="transform:translate(-50%,-50%);pointer-events:none;text-align:center;` +
+    `font-family:monospace;font-weight:700;color:#fff;line-height:1.2;` +
+    `text-shadow:0 0 6px #000,0 0 12px #000,0 0 4px #e040fb;">` +
+    `<div style="font-size:16px;">☠</div><div style="font-size:13px;">${troops}</div></div>`;
 }
 
 function runRechargeFlash(cellId: string, polygons: Map<string, L.Polygon>): void {
@@ -1388,6 +1431,17 @@ export default function MeshWarsView() {
   const [eventBanner, setEventBanner] = useState<GameEvent | null>(null);
   const pendingRechargeRef     = useRef<string | null>(null);
   const prevCardsRef           = useRef(0);
+
+  // ── patrol state ──────────────────────────────────────────────────────────
+  const [patrols, setPatrols]     = useState<PatrolUnit[]>([]);
+  const patrolsRef                = useRef<PatrolUnit[]>([]);
+  const patrolVisualsRef          = useRef<Map<string, PatrolVisual>>(new Map());
+  const [patrolAttack, setPatrolAttack] = useState<{ patrol: PatrolUnit; sourceId: string | null } | null>(null);
+  const patrolAttackRef           = useRef<{ patrol: PatrolUnit; sourceId: string | null } | null>(null);
+  const [patrolDestroyedModal, setPatrolDestroyedModal] = useState<string | null>(null);
+  const doubleReinfRef            = useRef(false);
+  patrolsRef.current              = patrols;
+  patrolAttackRef.current         = patrolAttack;
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth <= 768);
@@ -1588,15 +1642,26 @@ export default function MeshWarsView() {
               if (newCards.length < 5) newCards = [...newCards, drawn];
               else if (!prev.pendingCard)  newPending = drawn;
             }
+            const gotDouble = doubleReinfRef.current;
+            let reinf = f.reinf;
+            if (gotDouble) {
+              reinf *= 2;
+              doubleReinfRef.current = false;
+            }
             return {
               ...base, cells: finalCells, phase: f.winner ? "game_over" : "reinforcement",
-              turn: f.turn, reinforcementsLeft: f.reinf, winner: f.winner,
+              turn: f.turn, reinforcementsLeft: reinf, winner: f.winner,
               currentFaction: f.winner ?? "player",
               aiQueue: [], aiMsg: "", attackSource: null, attackTarget: null,
               cards: newCards, pendingCard: newPending, wonCellThisTurn: false,
               aiHands: f.aiHands, aiWonLastTurn: f.aiWonLastTurn,
               combatMsg: f.winner ? `¡${NAMES[f.winner]} dominó la Mesh!` : "",
-              log: [`TURNO ${f.turn} — +${f.reinf} TROPAS`, ...prev.log.slice(0, 9)],
+              log: [
+                gotDouble
+                  ? `TURNO ${f.turn} — ×2 TROPAS (+${reinf}) ⚡ PATRULLERO DESTRUIDO`
+                  : `TURNO ${f.turn} — +${reinf} TROPAS`,
+                ...prev.log.slice(0, 9),
+              ],
             };
           }
 
@@ -1885,6 +1950,15 @@ export default function MeshWarsView() {
         if (gs.cells[nb]?.owner === "player" && nb !== gs.moveSource) validSources.add(nb);
       });
     }
+    // Patrol attack source highlighting (ring-2)
+    if (patrolAttack && patrolAttack.sourceId === null) {
+      gridDisk(patrolAttack.patrol.h3Index, 2).forEach(nb => {
+        if (nb !== patrolAttack.patrol.h3Index && gs.cells[nb]?.owner === "player") validSources.add(nb);
+      });
+    }
+    if (patrolAttack?.sourceId) {
+      validSources.add(patrolAttack.sourceId);
+    }
 
     for (const cell of Object.values(gs.cells)) {
       const bnd      = cellToBoundary(cell.h3Index).map(([la, lo]) => [la, lo] as [number, number]);
@@ -1912,7 +1986,9 @@ export default function MeshWarsView() {
       poly.on("click", () => {
         setCardFlash(false);
         const state = gsRef.current;
-        if (!state || state.phase === "game_over" || state.phase === "action") return;
+        if (!state || state.phase === "game_over") return;
+        // In action phase, only allow patrol source selection
+        if (state.phase === "action" && !patrolAttackRef.current) return;
         const cur = state.cells[cellId];
 
         if (state.phase === "reinforcement") {
@@ -2003,6 +2079,16 @@ export default function MeshWarsView() {
           } : prev);
           return;
         }
+
+        // ── patrol attack: select source cell ────────────────────────────────
+        const pa = patrolAttackRef.current;
+        if (pa && pa.sourceId === null) {
+          if (cur.owner !== "player") return;
+          if (!gridDisk(pa.patrol.h3Index, 2).includes(cellId)) return;
+          SFX.select();
+          setPatrolAttack({ patrol: pa.patrol, sourceId: cellId });
+          return;
+        }
       });
 
       poly.addTo(map);
@@ -2057,7 +2143,8 @@ export default function MeshWarsView() {
       pendingRechargeRef.current = null;
       runRechargeFlash(id, polygonsRef.current);
     }
-  }, [gs]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gs, patrolAttack]);
 
   // Player census: flash all player cells at the start of each player turn
   useEffect(() => {
@@ -2070,10 +2157,168 @@ export default function MeshWarsView() {
     runCensusFlash(sortCellsGeographically(ids), polygonsRef.current, mapRef.current);
   }, [gs?.phase, gs?.turn]);
 
+  // ── patrol polling ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!gs || gs.phase === "game_over") return;
+
+    const poll = async () => {
+      const nodes = await fetchMovingNodes();
+      const currentGs = gsRef.current;
+      if (!currentGs || currentGs.phase === "game_over") return;
+
+      const prev = patrolsRef.current;
+      const newMap = new Map(nodes.map(n => [n.node_id, n]));
+
+      // Keep existing patrols whose node is still moving; update position
+      const kept: PatrolUnit[] = prev
+        .filter(p => newMap.has(p.nodeId))
+        .map(p => {
+          const n = newMap.get(p.nodeId)!;
+          return { ...p, lat: n.lat, lon: n.lon };
+        });
+
+      // Add newly detected moving nodes as fresh patrols
+      const knownIds = new Set(prev.map(p => p.nodeId));
+      for (const n of nodes) {
+        if (!knownIds.has(n.node_id)) {
+          kept.push({
+            nodeId:  n.node_id,
+            name:    n.long_name ?? n.short_name ?? n.node_id,
+            h3Index: latLngToCell(n.lat, n.lon, H3_RES),
+            troops:  20,
+            lat:     n.lat,
+            lon:     n.lon,
+          });
+        }
+      }
+
+      // Drain: each patrol drains 1 troop from each ring-1 and ring-2 cell (min 1)
+      if (kept.length > 0) {
+        const cells = gsRef.current?.cells ?? {};
+        const updates: Record<string, number> = {};
+        for (const patrol of kept) {
+          const neighbors = gridDisk(patrol.h3Index, 2)
+            .filter(nb => nb !== patrol.h3Index && cells[nb] && cells[nb].troops > 1);
+          for (const nb of neighbors) {
+            updates[nb] = (updates[nb] ?? cells[nb].troops) - 1;
+          }
+        }
+        const drainedIds = Object.keys(updates);
+        if (drainedIds.length > 0) {
+          SFX.patrolDrain();
+          setGs(prev2 => {
+            if (!prev2) return prev2;
+            const nc = { ...prev2.cells };
+            for (const [id, t] of Object.entries(updates)) {
+              if (nc[id]) nc[id] = { ...nc[id], troops: Math.max(1, t) };
+            }
+            return { ...prev2, cells: nc };
+          });
+          setTimeout(() => {
+            drainedIds.forEach(id => runRoundFlash(id, polygonsRef.current));
+          }, 30);
+        }
+      }
+
+      patrolsRef.current = kept;
+      setPatrols(kept);
+    };
+
+    poll();
+    const id = setInterval(poll, 30_000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!gs || gs.phase === "game_over"]);
+
+  // ── patrol markers ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const map = mapRef.current;
+    const currentIds = new Set(patrols.map(p => p.nodeId));
+
+    // Remove visuals for gone patrols
+    for (const [nodeId, vis] of patrolVisualsRef.current) {
+      if (!currentIds.has(nodeId)) {
+        vis.core.remove();
+        vis.label.remove();
+        vis.rings.forEach(r => r.remove());
+        patrolVisualsRef.current.delete(nodeId);
+      }
+    }
+
+    // Create or update visuals
+    for (const patrol of patrols) {
+      const ll: L.LatLngExpression = [patrol.lat, patrol.lon];
+      const existing = patrolVisualsRef.current.get(patrol.nodeId);
+      if (existing) {
+        existing.core.setLatLng(ll);
+        existing.label.setLatLng(ll);
+        existing.label.setIcon(L.divIcon({ className: "", html: patrolLabelHtml(patrol.troops), iconSize: [0, 0], iconAnchor: [0, 0] }));
+        existing.rings.forEach(r => r.setLatLng(ll));
+      } else {
+        const core = L.circle(ll, {
+          radius: PATROL_CORE_R, color: "#e040fb",
+          fillColor: "#e040fb", fillOpacity: 0.55, weight: 2,
+          interactive: true,
+        });
+        core.bindTooltip(
+          `<b style="color:#e040fb">☠ PATRULLERO</b><br>${patrol.name}<br>${patrol.troops} tropas`,
+          { direction: "top", sticky: false, offset: [0, -10], className: "mesh-tooltip" }
+        );
+        core.on("click", () => {
+          const gs2 = gsRef.current;
+          if (!gs2 || gs2.phase !== "action") return;
+          const p = patrolsRef.current.find(x => x.nodeId === patrol.nodeId);
+          if (!p) return;
+          setPatrolAttack({ patrol: p, sourceId: null });
+        });
+        core.addTo(map);
+
+        const label = L.marker(ll, {
+          icon: L.divIcon({ className: "", html: patrolLabelHtml(patrol.troops), iconSize: [0, 0], iconAnchor: [0, 0] }),
+          interactive: false, zIndexOffset: 1200,
+        });
+        label.addTo(map);
+
+        const rings = ([0, 1, 2] as const).map(() =>
+          L.circle(ll, { radius: PATROL_CORE_R, color: "#e040fb", fillOpacity: 0, weight: 1.5, opacity: 0, interactive: false })
+        );
+        rings.forEach(r => r.addTo(map));
+
+        patrolVisualsRef.current.set(patrol.nodeId, { core, label, rings });
+      }
+    }
+  }, [patrols]);
+
+  // ── patrol wave animation (requestAnimationFrame) ─────────────────────────
+  useEffect(() => {
+    if (patrols.length === 0) return;
+    const PERIOD  = 2400;
+    const N_RINGS = 3;
+    let frameId: number;
+    const animate = (now: number) => {
+      const t = (now % PERIOD) / PERIOD;
+      for (const vis of patrolVisualsRef.current.values()) {
+        for (let i = 0; i < N_RINGS; i++) {
+          const phase   = (t + i / N_RINGS) % 1;
+          const radius  = PATROL_CORE_R + phase * (PATROL_WAVE_MAX_R - PATROL_CORE_R);
+          const opacity = 0.6 * (1 - phase);
+          vis.rings[i].setRadius(radius);
+          vis.rings[i].setStyle({ opacity, fillOpacity: 0 });
+        }
+      }
+      frameId = requestAnimationFrame(animate);
+    };
+    frameId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frameId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [patrols.length > 0]);
+
   // ── actions ──────────────────────────────────────────────────────────────────
 
   function handleButton(action: "attack" | "attack_confirm" | "troop_plus" | "troop_minus" | "troop_plus_big" | "troop_minus_big" | "troop_confirm" | "move" | "pass" | "skip_ai" | "cancel") {
     setCardFlash(false);
+    if (["attack", "move", "pass", "cancel", "skip_ai"].includes(action)) setPatrolAttack(null);
     // One manual round of combat per click
     if (action === "attack_confirm") {
       SFX.attack();
@@ -2291,8 +2536,69 @@ export default function MeshWarsView() {
     });
   }
 
+  function handlePatrolAttackConfirm() {
+    const pa = patrolAttackRef.current;
+    if (!pa || !pa.sourceId) return;
+    const fromCell = gsRef.current?.cells[pa.sourceId];
+    if (!fromCell) return;
+
+    SFX.attack();
+    runRoundFlash(pa.sourceId, polygonsRef.current);
+
+    const d6 = () => Math.floor(Math.random() * 6) + 1;
+    const atkRoll = d6();
+    const defRoll = d6();
+
+    const currentPatrol = patrolsRef.current.find(p => p.nodeId === pa.patrol.nodeId);
+    if (!currentPatrol) { setPatrolAttack(null); return; }
+
+    if (atkRoll > defRoll) {
+      // Attacker wins — patrol loses 1 troop
+      const newTroops = currentPatrol.troops - 1;
+      SFX.patrolHit();
+      if (newTroops <= 0) {
+        // Patrol destroyed
+        const updatedPatrols = patrolsRef.current.filter(p => p.nodeId !== currentPatrol.nodeId);
+        patrolsRef.current = updatedPatrols;
+        setPatrols(updatedPatrols);
+        doubleReinfRef.current = true;
+        setPatrolDestroyedModal(currentPatrol.name);
+        SFX.patrolDestroyed();
+      } else {
+        const updatedPatrols = patrolsRef.current.map(p =>
+          p.nodeId === currentPatrol.nodeId ? { ...p, troops: newTroops } : p
+        );
+        patrolsRef.current = updatedPatrols;
+        setPatrols(updatedPatrols);
+        // Keep attack open — player may continue
+        setPatrolAttack({ patrol: { ...currentPatrol, troops: newTroops }, sourceId: pa.sourceId });
+        return;
+      }
+    } else {
+      // Attacker loses
+      if (fromCell.troops > 1) {
+        setGs(prev => {
+          if (!prev || !pa.sourceId) return prev;
+          const nc = { ...prev.cells };
+          nc[pa.sourceId] = { ...nc[pa.sourceId], troops: nc[pa.sourceId].troops - 1 };
+          return { ...prev, cells: nc };
+        });
+      }
+      // If 1 troop: attack fails silently (no cost — special rule)
+      // Keep attack open
+      setPatrolAttack({ patrol: currentPatrol, sourceId: pa.sourceId });
+      return;
+    }
+
+    setPatrolAttack(null);
+  }
+
   function startGame() {
     fittedRef.current = false;
+    patrolsRef.current = [];
+    setPatrols([]);
+    setPatrolAttack(null);
+    doubleReinfRef.current = false;
     setGs(initGame(nodesRef.current, difficulty));
   }
 
@@ -2618,6 +2924,51 @@ export default function MeshWarsView() {
           );
         })()}
 
+        {/* Patrol destroyed modal */}
+        {patrolDestroyedModal && (
+          <>
+            <div style={{ position: "absolute", inset: 0, zIndex: 1600, background: "rgba(0,0,0,0.7)" }} />
+            <div style={{
+              position: "absolute", inset: 0, zIndex: 1601,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              pointerEvents: "none",
+            }}>
+              <div style={{
+                background: "#0a0010", border: "2px solid #e040fb",
+                borderTop: "4px solid #e040fb",
+                borderRadius: 4, padding: "28px 36px",
+                maxWidth: 460, width: "90%",
+                boxShadow: "0 0 60px #e040fb66",
+                fontFamily: "monospace", textAlign: "center",
+                pointerEvents: "auto",
+              }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>💥</div>
+                <div style={{ color: "#e040fb", fontSize: 13, fontWeight: 700, letterSpacing: 4, marginBottom: 8, textShadow: "0 0 12px #e040fb" }}>
+                  ¡PATRULLERO DESTRUIDO!
+                </div>
+                <div style={{ color: "#ffffff", fontSize: 20, fontWeight: 800, marginBottom: 12 }}>
+                  {patrolDestroyedModal}
+                </div>
+                <div style={{ color: "#b8cfe0", fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
+                  ¡La Mesh te lo agradece! Toda la comunidad celebra la caída del patrullero.<br />
+                  <span style={{ color: "#ffcc00", fontWeight: 700 }}>Al inicio de tu próximo turno recibís el doble de tropas. ⚡</span>
+                </div>
+                <button
+                  onClick={() => setPatrolDestroyedModal(null)}
+                  style={{
+                    background: "#e040fb22", color: "#e040fb",
+                    border: "1px solid #e040fb", borderRadius: 2,
+                    padding: "10px 28px", fontFamily: "monospace",
+                    fontWeight: 700, fontSize: 13, cursor: "pointer",
+                    letterSpacing: 2, boxShadow: "0 0 14px #e040fb66",
+                    textTransform: "uppercase" as const,
+                  }}
+                >¡ENTENDIDO!</button>
+              </div>
+            </div>
+          </>
+        )}
+
         {/* Start screen */}
         {!gs && introState === "start" && (
           <div style={{
@@ -2782,7 +3133,7 @@ export default function MeshWarsView() {
               fontFamily: "monospace", color: "#00e676", fontSize: isMobile ? 13 : 19, lineHeight: 1.9,
               whiteSpace: "pre-wrap", maxWidth: 680, width: "100%",
               textShadow: "0 0 8px #00e67666",
-              overflowY: "auto", maxHeight: isMobile ? "60vh" : "75vh", scrollbarWidth: "none",
+              overflowY: "auto", maxHeight: isMobile ? "55vh" : "75vh", scrollbarWidth: "none",
               boxSizing: "border-box",
             }}>
               {INTRO_TEXT.slice(0, introChars)}
@@ -2808,8 +3159,10 @@ export default function MeshWarsView() {
               <button
                 style={{
                   ...btnStyle("#c62828"),
-                  marginTop: 24,
-                  ...(isMobile ? {} : { position: "absolute", bottom: 40, left: "50%", transform: "translateX(-50%)" }),
+                  position: "absolute",
+                  bottom: "calc(40px + env(safe-area-inset-bottom, 0px))",
+                  left: "50%",
+                  transform: "translateX(-50%)",
                 }}
                 onClick={() => {
                   if (tutorialMode) {
@@ -2939,6 +3292,42 @@ export default function MeshWarsView() {
           )}
           {!gs ? null : gs.phase === "game_over" ? (
             <button style={btnStyle("#00e5ff")} onClick={startGame}>NUEVA PARTIDA</button>
+          ) : patrolAttack ? (
+            /* ── Patrol attack UI ── */
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+              <div style={{ color: "#e040fb", fontFamily: "monospace", fontSize: 12, fontWeight: 700, letterSpacing: 2, textShadow: "0 0 8px #e040fb" }}>
+                ☠ ATACAR PATRULLERO — {patrolAttack.patrol.name}
+              </div>
+              {!patrolAttack.sourceId ? (
+                <div style={{ color: "#8aaabb", fontFamily: "monospace", fontSize: 11 }}>
+                  Seleccioná un territorio tuyo adyacente al patrullero
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <span style={{ color: "#aabbcc", fontFamily: "monospace", fontSize: 11 }}>
+                    {gs.cells[patrolAttack.sourceId]?.troops ?? "?"} vs {patrolAttack.patrol.troops} ☠
+                  </span>
+                  <button
+                    onClick={handlePatrolAttackConfirm}
+                    style={{
+                      background: "#e040fb18", color: "#e040fb", border: "1px solid #e040fb",
+                      borderRadius: 2, padding: "10px 24px", fontFamily: "monospace",
+                      fontWeight: 700, fontSize: 16, cursor: "pointer", letterSpacing: 2,
+                      boxShadow: "0 0 14px #e040fb88", textTransform: "uppercase" as const,
+                    }}
+                  >⚔ ATACAR</button>
+                </div>
+              )}
+              <button
+                onClick={() => setPatrolAttack(null)}
+                style={{
+                  background: "transparent", color: "#2a4a5a", border: "1px solid #0d2030",
+                  borderRadius: 2, padding: "6px 20px", fontFamily: "monospace",
+                  fontWeight: 700, fontSize: 12, cursor: "pointer", letterSpacing: 2,
+                  textTransform: "uppercase" as const,
+                }}
+              >↩ CANCELAR</button>
+            </div>
           ) : inAiTurn ? (
             <button
               onClick={() => handleButton("skip_ai")}

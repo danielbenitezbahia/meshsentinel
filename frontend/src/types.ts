@@ -18,6 +18,15 @@ export interface MeshNode {
   voltage?: number | null;
 }
 
+export interface MovingNode {
+  node_id:    string;
+  short_name: string | null;
+  long_name:  string | null;
+  lat:        number;
+  lon:        number;
+  last_ts:    number;
+}
+
 export interface Neighbor {
   node_id: string;
   short_name: string | null;
