@@ -316,6 +316,19 @@ export interface VisitRow {
   country?: string;
 }
 
+export interface ChannelUtilNodeSeries {
+  node_id: string;
+  name: string;
+  util: (number | null)[];
+  air_tx: (number | null)[];
+}
+
+export interface ChannelUtilResponse {
+  period: string;
+  labels: string[];
+  nodes: ChannelUtilNodeSeries[];
+}
+
 export interface GameRow {
   period: string;
   ip: string;

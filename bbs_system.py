@@ -431,7 +431,8 @@ class BBSSystem:
 
     def notify_new_node(self, node_id: str, short_name: str, long_name: str,
                         hops=None, snr=None,
-                        heard_by=None, heard_by_short=None, heard_by_long=None):
+                        heard_by=None, heard_by_short=None, heard_by_long=None,
+                        traceroute_path=None):
         traffic_stats.record_node_event(
             node_id=node_id,
             short_name=short_name,
@@ -443,19 +444,21 @@ class BBSSystem:
             heard_by_short=heard_by_short,
             heard_by_long=heard_by_long,
         )
-        heard_line = ""
-        if heard_by:
-            heard_name = heard_by_long or heard_by_short or heard_by
-            heard_line = f"\nEscuchado por: {heard_name}"
-        hops_line = f"\nHops: {hops}" if hops is not None else ""
-        msg = (
-            f"🆕 Nodo nuevo\n"
-            f"Largo: {long_name or '-'}\n"
-            f"Corto: {short_name or '-'}\n"
-            f"ID: {node_id}"
-            f"{hops_line}"
-            f"{heard_line}"
-        )
+        lines = ["🆕 Nodo nuevo"]
+        if long_name:
+            lines.append(f"Largo: {long_name}")
+        if short_name:
+            lines.append(f"Corto: {short_name}")
+        lines.append(f"ID: {node_id}")
+        if hops is not None:
+            lines.append(f"Hops: {hops}")
+        if traceroute_path and len(traceroute_path) > 1:
+            lines.append(f"Ruta: {' → '.join(traceroute_path)}")
+        elif heard_by:
+            heard_name = heard_by_long or heard_by_short
+            heard_label = f"{heard_by} ({heard_name})" if heard_name else heard_by
+            lines.append(f"Escuchado por: {heard_label}")
+        msg = "\n".join(lines)
         for target in NEW_NODE_NOTIFY_NODES:
             try:
                 self.interface.send_message(target, msg)
@@ -829,33 +832,35 @@ class BBSSystem:
         ordered = PARTIDO_ORDER + rest
 
         messages = []
+        header_added = False
 
-        for i, partido in enumerate(ordered):
+        for partido in ordered:
+            partido_alerts = self._merge_partido_alerts(by_partido.get(partido, []))
+
+            if not partido_alerts:
+                continue
+
             lines = []
 
-            if i == 0:
+            if not header_added:
                 lines += [
                     "⚡🚨 ALERTAS SMN 🚨⚡",
                     f"── Reporte {hour}hs · 72hs ──",
                     "",
                 ]
+                header_added = True
 
             lines.append(f"📍 {partido.upper()}")
 
-            partido_alerts = self._merge_partido_alerts(by_partido.get(partido, []))
-
-            if not partido_alerts:
-                lines.append("Sin alertas vigentes.")
-            else:
-                for alert in partido_alerts:
-                    icon = self.alert_icon(alert["title"])
-                    sev = self.severity_to_color(alert["severity"])
-                    when_txt = self.format_alert_window_es(alert["onset"], alert["expires"])
-                    lines += [
-                        "· · · · · · · · · ·",
-                        f"{sev}{icon} {alert['title'].upper()}",
-                        f"🕐 {when_txt}",
-                    ]
+            for alert in partido_alerts:
+                icon = self.alert_icon(alert["title"])
+                sev = self.severity_to_color(alert["severity"])
+                when_txt = self.format_alert_window_es(alert["onset"], alert["expires"])
+                lines += [
+                    "· · · · · · · · · ·",
+                    f"{sev}{icon} {alert['title'].upper()}",
+                    f"🕐 {when_txt}",
+                ]
 
             messages.append("\n".join(lines))
 

@@ -10,7 +10,10 @@ const COLORS = [
 ];
 
 function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  // Restar 3hs para obtener la fecha en horario Argentina (ART = UTC-3),
+  // sin depender de la zona horaria configurada en el navegador.
+  const ar = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  return ar.toISOString().slice(0, 10);
 }
 
 export default function TrackView() {

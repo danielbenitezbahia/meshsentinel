@@ -135,16 +135,16 @@ def process_command(user_id, command, bbs):
     online.sort(key=lambda x: x[0])
 
     lines = []
-    lines.append(f"Nodos conectados (últimos {ONLINE_WINDOW_SECONDS//60} min):")
+    lines.append(f"Nodos ({ONLINE_WINDOW_SECONDS//60}min) [{len(online)}]:")
 
-    MAX_NODES = 30  # para no explotar el payload
+    MAX_NODES = 50
     for i, (age, node_id, short_name, long_name) in enumerate(online[:MAX_NODES], start=1):
         age_min = max(0, age // 60)
-        # Formato compacto y estable
-        lines.append(f"{i}. {node_id} | {short_name or '-'} | {long_name or '-'} | hace {age_min}m")
+        label = short_name or long_name or node_id
+        lines.append(f"{i}. {label} {age_min}m")
 
     if len(online) > MAX_NODES:
-        lines.append(f"... ({len(online) - MAX_NODES} más, truncado)")
+        lines.append(f"+{len(online) - MAX_NODES} más")
 
     lines.append("")
     lines.append("Tip: 'cd ..' para volver.")

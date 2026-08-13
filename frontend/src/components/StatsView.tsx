@@ -2,11 +2,13 @@ import { useState, useEffect, useCallback } from "react";
 import {
   ResponsiveContainer,
   PieChart, Pie, Cell,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  BarChart, Bar,
+  LineChart, Line,
+  XAxis, YAxis, CartesianGrid,
   Tooltip, Legend,
 } from "recharts";
-import { fetchTrafficStats, fetchTrafficEvolution, fetchStatsNodes } from "../api";
-import type { TrafficStats, EvolutionPoint, StatsNodeEntry } from "../types";
+import { fetchTrafficStats, fetchTrafficEvolution, fetchStatsNodes, fetchChannelUtil } from "../api";
+import type { TrafficStats, EvolutionPoint, StatsNodeEntry, ChannelUtilNodeSeries } from "../types";
 
 type Period = "day" | "week" | "month";
 
@@ -35,6 +37,11 @@ const TYPE_LABEL: Record<string, string> = {
   NODEINFO_APP:       "Info nodo",
   OTHER:              "Otros",
 };
+
+const NODE_COLORS = [
+  "#42a5f5", "#ffa726", "#ab47bc", "#66bb6a",
+  "#ef5350", "#26c6da", "#ff7043", "#78909c",
+];
 
 const TOOLTIP_STYLE = {
   background: "#0d2137",
@@ -83,12 +90,23 @@ export default function StatsView() {
   const [stats, setStats]         = useState<TrafficStats | null>(null);
   const [evolution, setEvolution] = useState<EvolutionPoint[]>([]);
   const [nodes, setNodes]         = useState<{ public: StatsNodeEntry[]; other_mesh: StatsNodeEntry[]; private_encrypted: StatsNodeEntry[] } | null>(null);
+  const [chanUtil, setChanUtil]   = useState<{ labels: string[]; nodes: ChannelUtilNodeSeries[] } | null>(null);
   const [loading, setLoading]     = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
-    Promise.all([fetchTrafficStats(period), fetchTrafficEvolution(period), fetchStatsNodes(period)])
-      .then(([s, e, n]) => { setStats(s); setEvolution(e.points); setNodes(n); })
+    Promise.all([
+      fetchTrafficStats(period),
+      fetchTrafficEvolution(period),
+      fetchStatsNodes(period),
+      fetchChannelUtil(period).catch(() => ({ period, labels: [], nodes: [] })),
+    ])
+      .then(([s, e, n, cu]) => {
+        setStats(s);
+        setEvolution(e.points);
+        setNodes(n);
+        setChanUtil({ labels: cu.labels, nodes: cu.nodes });
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [period]);
@@ -116,6 +134,15 @@ export default function StatsView() {
   const evolTitle = period === "day" ? "por hora (hoy)"
                   : period === "week" ? "últimos 7 días"
                   : "últimos 30 días";
+
+  // Build recharts-friendly wide-format points for channel utilization
+  const chanUtilPoints = chanUtil
+    ? chanUtil.labels.map((label, i) => {
+        const pt: Record<string, number | null | string> = { label };
+        for (const n of chanUtil.nodes) pt[n.name] = n.util[i] ?? null;
+        return pt;
+      })
+    : [];
 
   return (
     <div className="stats-view">
@@ -232,6 +259,39 @@ export default function StatsView() {
           </ResponsiveContainer>
         </div>
       )}
+
+      {/* Utilización del canal RF */}
+      <div className="stats-chart-card stats-chart-full">
+        <div className="chart-title">Utilización del canal · {evolTitle}</div>
+        {chanUtil && chanUtil.nodes.length === 0 ? (
+          <div className="rank-empty" style={{ padding: "2rem 0", textAlign: "center" }}>Sin datos de telemetría</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={chanUtilPoints} margin={{ right: 16, top: 4 }}>
+              <XAxis dataKey="label" tick={{ fill: "#607d8b", fontSize: 10 }} interval="preserveStartEnd" />
+              <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fill: "#607d8b", fontSize: 11 }} width={42} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" />
+              <Tooltip
+                formatter={(v) => v != null ? `${v}%` : "—"}
+                contentStyle={TOOLTIP_STYLE}
+                labelStyle={{ color: "#90a4ae" }}
+              />
+              <Legend wrapperStyle={{ fontSize: 12, color: "#b0bec5" }} />
+              {chanUtil?.nodes.map((n, i) => (
+                <Line
+                  key={n.node_id}
+                  type="monotone"
+                  dataKey={n.name}
+                  stroke={NODE_COLORS[i % NODE_COLORS.length]}
+                  dot={false}
+                  strokeWidth={2}
+                  connectNulls
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
     </div>
   );
 }

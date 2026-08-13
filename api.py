@@ -750,6 +750,65 @@ def get_stats_nodes():
     })
 
 
+@app.get("/api/stats/channel-util")
+def get_channel_util():
+    period = request.args.get("period", "day")
+    since  = _stats_since(period)
+
+    label_expr = (
+        "strftime('%H:00', ts, 'unixepoch', 'localtime')"
+        if period == "day"
+        else "date(ts, 'unixepoch', 'localtime')"
+    )
+
+    rows = _q(f"""
+        SELECT {label_expr} AS label,
+               dm.node_id,
+               ROUND(AVG(dm.channel_util), 1) AS avg_util,
+               ROUND(AVG(dm.air_util_tx),  1) AS avg_air_tx
+        FROM device_metrics dm
+        WHERE dm.ts >= ? AND dm.channel_util IS NOT NULL
+        GROUP BY label, dm.node_id
+        ORDER BY MIN(dm.ts) ASC, dm.node_id
+    """, (since,))
+
+    if not rows:
+        return jsonify({"period": period, "labels": [], "nodes": []})
+
+    # Ordered unique labels
+    labels = list(dict.fromkeys(r["label"] for r in rows))
+
+    # Per-node series
+    node_ids_ordered = list(dict.fromkeys(r["node_id"] for r in rows))
+    by_node: dict = {nid: {"util": {}, "air_tx": {}} for nid in node_ids_ordered}
+    for r in rows:
+        by_node[r["node_id"]]["util"][r["label"]]   = r["avg_util"]
+        by_node[r["node_id"]]["air_tx"][r["label"]] = r["avg_air_tx"]
+
+    # Resolve names
+    if node_ids_ordered:
+        ph = ",".join("?" * len(node_ids_ordered))
+        name_rows = _q(
+            f"SELECT node_id, COALESCE(short_name, node_id) AS name FROM node_stats WHERE node_id IN ({ph})",
+            node_ids_ordered,
+        )
+        names = {r["node_id"]: r["name"] for r in name_rows}
+    else:
+        names = {}
+
+    nodes_out = [
+        {
+            "node_id": nid,
+            "name": names.get(nid, nid),
+            "util":   [by_node[nid]["util"].get(l)   for l in labels],
+            "air_tx": [by_node[nid]["air_tx"].get(l) for l in labels],
+        }
+        for nid in node_ids_ordered
+    ]
+
+    return jsonify({"period": period, "labels": labels, "nodes": nodes_out})
+
+
 @app.get("/api/events/nodes")
 def get_node_events():
     period = request.args.get("period", "week")

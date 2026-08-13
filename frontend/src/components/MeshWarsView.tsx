@@ -1908,9 +1908,6 @@ export default function MeshWarsView() {
       attribution: "© OpenStreetMap", maxZoom: 19,
     }).addTo(mapRef.current);
     mapRef.current.on("zoomend", () => setMapZoom(mapRef.current!.getZoom()));
-    // Custom pane so patrol circles always render above cell polygons (overlayPane z-index=400)
-    mapRef.current.createPane("patrolPane");
-    (mapRef.current.getPane("patrolPane") as HTMLElement).style.zIndex = "450";
     return () => { mapRef.current?.remove(); mapRef.current = null; };
   }, []);
 
@@ -2146,6 +2143,14 @@ export default function MeshWarsView() {
       pendingRechargeRef.current = null;
       runRechargeFlash(id, polygonsRef.current);
     }
+
+    // Patrol circles must always sit on top of cell polygons within the SVG layer.
+    // This effect re-creates all polygons whenever gs/patrolAttack change, which
+    // pushes them to the end of the SVG DOM (= visually on top). Re-promote patrol
+    // circles to front so they remain clickable.
+    for (const vis of patrolVisualsRef.current.values()) {
+      vis.core.bringToFront();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gs, patrolAttack]);
 
@@ -2263,7 +2268,6 @@ export default function MeshWarsView() {
           radius: PATROL_CORE_R, color: "#e040fb",
           fillColor: "#e040fb", fillOpacity: 0.55, weight: 2,
           interactive: true,
-          pane: "patrolPane",
         });
         core.bindTooltip(
           `<b style="color:#e040fb">☠ PATRULLERO</b><br>${patrol.name}<br>${patrol.troops} tropas`,

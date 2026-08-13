@@ -1,4 +1,4 @@
-import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow, GameRow, MovingNode } from "./types";
+import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow, GameRow, MovingNode, ChannelUtilResponse } from "./types";
 
 export const API_BASE = "";
 
@@ -116,6 +116,12 @@ export async function logGame(): Promise<void> {
 
 export async function fetchGames(period: "daily" | "monthly" | "yearly"): Promise<{ rows: GameRow[] }> {
   const res = await fetch(`${API_BASE}/api/admin/games?period=${period}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchChannelUtil(period: string): Promise<ChannelUtilResponse> {
+  const res = await fetch(`${API_BASE}/api/stats/channel-util?period=${period}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
