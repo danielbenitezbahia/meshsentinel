@@ -281,7 +281,11 @@ def _freshness() -> dict:
 @app.get("/api/mesh/graph")
 def get_graph():
     now = int(time.time())
-    since = now - 7200  # solo nodos vistos en las últimas 2 horas
+    # Sin filtro de tiempo: igual que /api/mesh/nodes y que node_neighbors (edges),
+    # que tampoco filtran. El frontend (MapView) ya se encarga de desvanecer los
+    # nodos viejos por opacidad en vez de ocultarlos — filtrar acá dejaba el mapa
+    # vacío entero en horarios de poco tráfico (madrugada) aunque los nodos sí
+    # existieran, solo que con last_seen > 2hs.
     nodes = _q("""
         SELECT ns.node_id, ns.short_name, ns.long_name,
                ns.last_seen_ts, ns.hops_from_bbs, ns.snr_from_bbs,
@@ -289,9 +293,8 @@ def get_graph():
                ns.lat, ns.lon, ns.altitude, ns.position_ts,
                (SELECT COUNT(*) FROM node_neighbors WHERE reporter = ns.node_id) AS neighbor_count
         FROM node_stats ns
-        WHERE ns.last_seen_ts >= ?
         ORDER BY ns.last_seen_ts DESC
-    """, (since,))
+    """)
     for n in nodes:
         n["last_seen_mins_ago"] = (
             round((now - n["last_seen_ts"]) / 60) if n.get("last_seen_ts") else None
@@ -789,7 +792,7 @@ def get_channel_util():
     if node_ids_ordered:
         ph = ",".join("?" * len(node_ids_ordered))
         name_rows = _q(
-            f"SELECT node_id, COALESCE(short_name, node_id) AS name FROM node_stats WHERE node_id IN ({ph})",
+            f"SELECT node_id, COALESCE(long_name, short_name, node_id) AS name FROM node_stats WHERE node_id IN ({ph})",
             node_ids_ordered,
         )
         names = {r["node_id"]: r["name"] for r in name_rows}
@@ -1102,15 +1105,22 @@ def get_activity_heatmap():
 FRONTEND_DIST = "/home/daniel/bbs/meshsentinel/frontend/dist"
 
 
+def _period_date_expr_and_since(period: str):
+    """Expresión SQL de agrupamiento + timestamp de corte para no escanear todo el historial.
+    'yearly' no lleva tope: agrupa en pocos buckets igual, no vale la pena recortarlo."""
+    now = int(time.time())
+    if period == "monthly":
+        return "strftime('%Y-%m', ts, 'unixepoch', '-3 hours')", now - 365 * 86400
+    elif period == "yearly":
+        return "strftime('%Y', ts, 'unixepoch', '-3 hours')", 0
+    else:
+        return "date(ts, 'unixepoch', '-3 hours')", now - 10 * 86400
+
+
 @app.get("/api/admin/visits")
 def admin_visits():
     period = request.args.get("period", "daily")
-    if period == "monthly":
-        date_expr = "strftime('%Y-%m', ts, 'unixepoch', '-3 hours')"
-    elif period == "yearly":
-        date_expr = "strftime('%Y', ts, 'unixepoch', '-3 hours')"
-    else:
-        date_expr = "date(ts, 'unixepoch', '-3 hours')"
+    date_expr, since = _period_date_expr_and_since(period)
 
     rows = _q(f"""
         SELECT
@@ -1121,9 +1131,10 @@ def admin_visits():
             MIN(ts)          AS first_ts,
             MAX(ts)          AS last_ts
         FROM visit_log
+        WHERE ts >= ?
         GROUP BY period, ip
         ORDER BY period DESC, visits DESC
-    """)
+    """, (since,))
     country_map = {r["ip"]: _get_country(r["ip"]) for r in {r["ip"]: r for r in rows}.values()}
     for r in rows:
         r["country"] = country_map[r["ip"]]
@@ -1144,12 +1155,7 @@ def admin_game_log():
 @app.get("/api/admin/games")
 def admin_games():
     period = request.args.get("period", "daily")
-    if period == "monthly":
-        date_expr = "strftime('%Y-%m', ts, 'unixepoch', '-3 hours')"
-    elif period == "yearly":
-        date_expr = "strftime('%Y', ts, 'unixepoch', '-3 hours')"
-    else:
-        date_expr = "date(ts, 'unixepoch', '-3 hours')"
+    date_expr, since = _period_date_expr_and_since(period)
 
     rows = _q(f"""
         SELECT
@@ -1159,9 +1165,10 @@ def admin_games():
             MIN(ts)      AS first_ts,
             MAX(ts)      AS last_ts
         FROM game_log
+        WHERE ts >= ?
         GROUP BY period, ip
         ORDER BY period DESC, games DESC
-    """)
+    """, (since,))
     country_map = {r["ip"]: _get_country(r["ip"]) for r in {r["ip"]: r for r in rows}.values()}
     for r in rows:
         r["country"] = country_map[r["ip"]]

@@ -33,12 +33,6 @@ _PARTIDOS_CACHE = None
 DB_PATH = "weather_alerts.sqlite"
 
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def init_db() -> None:
     with get_connection() as conn:
         conn.execute("""
@@ -248,45 +242,6 @@ def parse_iso_dt(value: str):
         return None
 
 
-def get_currently_valid_alerts() -> List[Dict]:
-    with get_connection() as conn:
-        rows = conn.execute("""
-            SELECT
-                source_xml_url,
-                title,
-                alert_date,
-                urgency,
-                severity,
-                certainty,
-                onset,
-                expires,
-                polygon,
-                is_active
-            FROM weather_alerts
-            WHERE is_active = 1
-            ORDER BY title, expires
-        """).fetchall()
-
-    now = datetime.now().astimezone()
-    result = []
-
-    for row in rows:
-        alert = dict(row)
-
-        onset_dt = parse_iso_dt(alert.get("onset"))
-        expires_dt = parse_iso_dt(alert.get("expires"))
-
-        if not expires_dt:
-            continue
-
-        # vigente si todavía no expiró
-        if expires_dt > now:
-            result.append(alert)
-
-    logger.info("SMN DEBUG: currently valid alerts after Python time filter: %d", len(result))
-    return result
-
-
 def get_unsent_alerts_for_node(node_id: str, now: Optional[datetime] = None) -> List[Dict]:
     """
     Devuelve alertas activas/no expiradas que todavía no fueron enviadas al nodo.
@@ -430,55 +385,6 @@ def get_connection():
     return conn
 
 
-def parse_polygon_string(polygon_str: str) -> List[Tuple[float, float]]:
-    """
-    Convierte string tipo:
-    '-44.68,-70.98 -44.68,-70.96 ...'
-    a lista [(lat, lon), ...]
-    """
-    points = []
-    if not polygon_str:
-        return points
-
-    raw_points = polygon_str.strip().split()
-    for raw in raw_points:
-        try:
-            lat_str, lon_str = raw.split(",", 1)
-            lat = float(lat_str)
-            lon = float(lon_str)
-            points.append((lat, lon))
-        except Exception:
-            continue
-
-    return points
-
-
-def point_in_polygon(lat: float, lon: float, polygon: List[Tuple[float, float]]) -> bool:
-    """
-    Ray casting.
-    polygon: lista de (lat, lon)
-    """
-    if len(polygon) < 3:
-        return False
-
-    inside = False
-    j = len(polygon) - 1
-
-    for i in range(len(polygon)):
-        yi, xi = polygon[i]   # lat, lon
-        yj, xj = polygon[j]   # lat, lon
-
-        intersects = ((yi > lat) != (yj > lat)) and (
-            lon < (xj - xi) * (lat - yi) / ((yj - yi) + 1e-12) + xi
-        )
-        if intersects:
-            inside = not inside
-
-        j = i
-
-    return inside
-
-
 def polygons_intersect_simple(poly_a: List[Tuple[float, float]], poly_b: List[Tuple[float, float]]) -> bool:
     """
     Aproximación práctica:
@@ -499,7 +405,7 @@ def polygons_intersect_simple(poly_a: List[Tuple[float, float]], poly_b: List[Tu
     return False
 
 
-def get_currently_valid_alerts() -> List[Dict]:
+def get_currently_valid_alerts(now: Optional[datetime] = None) -> List[Dict]:
     with get_connection() as conn:
         rows = conn.execute("""
             SELECT
@@ -518,7 +424,7 @@ def get_currently_valid_alerts() -> List[Dict]:
             ORDER BY title, expires
         """).fetchall()
 
-    now = datetime.now().astimezone()
+    now = now or datetime.now().astimezone()
     result = []
 
     for row in rows:
@@ -673,8 +579,31 @@ def polygon_edges(poly: List[Tuple[float, float]]):
         yield poly[i], poly[(i + 1) % len(poly)]
 
 
+def _bboxes_overlap(poly_a: List[Tuple[float, float]], poly_b: List[Tuple[float, float]],
+                     margin_deg: float = 0.05) -> bool:
+    """Chequeo barato de bounding box antes de la geometría fina. margin_deg (~5km)
+    da un poco de margen para no descartar polígonos apenas tangentes."""
+    lats_a = [p[0] for p in poly_a]
+    lons_a = [p[1] for p in poly_a]
+    lats_b = [p[0] for p in poly_b]
+    lons_b = [p[1] for p in poly_b]
+
+    return (
+        min(lats_a) - margin_deg <= max(lats_b)
+        and max(lats_a) + margin_deg >= min(lats_b)
+        and min(lons_a) - margin_deg <= max(lons_b)
+        and max(lons_a) + margin_deg >= min(lons_b)
+    )
+
+
 def polygons_intersect(poly_a: List[Tuple[float, float]], poly_b: List[Tuple[float, float]]) -> bool:
     if not poly_a or not poly_b:
+        return False
+
+    # Descarte rápido: si ni las bounding boxes se tocan, no hace falta evaluar
+    # la geometría fina (evita falsos positivos de los tests de abajo cuando los
+    # polígonos están a cientos de km de distancia).
+    if not _bboxes_overlap(poly_a, poly_b):
         return False
 
     for lat, lon in poly_a:
@@ -734,6 +663,15 @@ def load_target_partidos() -> Dict[str, List[List[Tuple[float, float]]]]:
     for feat in geo.get("features", []):
         props = feat.get("properties", {}) or {}
         geometry = feat.get("geometry", {}) or {}
+
+        # Todos los TARGET_PARTIDOS son de Buenos Aires. Sin este filtro, nombres
+        # que se repiten como departamento en otra provincia (ej. "Adolfo Alsina"
+        # también existe en Río Negro, "Coronel Pringles" también en San Luis)
+        # pisan la geometría correcta porque el loop de abajo se queda con la
+        # última coincidencia que encuentra.
+        provincia = (props.get("provincia") or {}).get("nombre") or ""
+        if normalize_text(provincia) != "buenos aires":
+            continue
 
         nombre = props.get("nombre") or ""
         nombre_completo = props.get("nombre_completo") or ""

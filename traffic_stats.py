@@ -251,6 +251,34 @@ def init_db():
         except Exception:
             pass  # ya existe
 
+    # Marcas de envíos programados ya despachados (broadcasts SMN, Sentinel Log, etc.)
+    # Persistido para que un restart del proceso no vuelva a disparar el mismo slot.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS scheduled_broadcasts_sent (
+      slot_key TEXT PRIMARY KEY,
+      sent_at  INTEGER NOT NULL
+    )
+    """)
+
+    con.commit()
+    con.close()
+
+
+def broadcast_already_sent(slot_key: str) -> bool:
+    con = sqlite3.connect(DB_PATH)
+    row = con.execute(
+        "SELECT 1 FROM scheduled_broadcasts_sent WHERE slot_key = ?", (slot_key,)
+    ).fetchone()
+    con.close()
+    return row is not None
+
+
+def mark_broadcast_sent(slot_key: str):
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT OR IGNORE INTO scheduled_broadcasts_sent (slot_key, sent_at) VALUES (?, ?)",
+        (slot_key, _now()),
+    )
     con.commit()
     con.close()
 

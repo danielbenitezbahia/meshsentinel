@@ -50,6 +50,34 @@ const TOOLTIP_STYLE = {
   color: "#cfd8dc",
 };
 
+function ChannelUtilTooltip({ active, payload, label }: any) {
+  if (!active || !payload || payload.length === 0) return null;
+  const sorted = [...payload]
+    .filter((p: any) => p.value != null)
+    .sort((a: any, b: any) => (b.value ?? 0) - (a.value ?? 0));
+  if (sorted.length === 0) return null;
+  return (
+    <div
+      style={{
+        ...TOOLTIP_STYLE,
+        padding: "8px 10px",
+        borderRadius: 6,
+        maxHeight: 280,
+        overflowY: "auto",
+      }}
+    >
+      <div style={{ color: "#90a4ae", marginBottom: 4 }}>{label}</div>
+      {sorted.map((p: any) => (
+        <div key={p.dataKey} style={{ display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: p.color, flexShrink: 0 }} />
+          <span style={{ flex: 1 }}>{p.name}</span>
+          <span>{p.value != null ? `${p.value}%` : "—"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RankColumn({ title, data, color }: { title: string; data: StatsNodeEntry[]; color: string }) {
   const max = data[0]?.count ?? 1;
   return (
@@ -272,9 +300,9 @@ export default function StatsView() {
               <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fill: "#607d8b", fontSize: 11 }} width={42} />
               <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" />
               <Tooltip
-                formatter={(v) => v != null ? `${v}%` : "—"}
-                contentStyle={TOOLTIP_STYLE}
-                labelStyle={{ color: "#90a4ae" }}
+                content={<ChannelUtilTooltip />}
+                allowEscapeViewBox={{ x: true, y: true }}
+                wrapperStyle={{ zIndex: 100 }}
               />
               <Legend wrapperStyle={{ fontSize: 12, color: "#b0bec5" }} />
               {chanUtil?.nodes.map((n, i) => (

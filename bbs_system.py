@@ -41,6 +41,13 @@ BBS_WELCOME_PHRASES = [
     "Todo enlace empieza con un intento.",
 ]
 
+# Agosto 2026: frase fija en vez de la aleatoria (cita de "Neuromante", W. Gibson)
+FIXED_WELCOME_PHRASE_PERIOD = (2026, 8)  # (año, mes)
+FIXED_WELCOME_PHRASE = (
+    "El cielo sobre el puerto tenía el color de una pantalla "
+    "de televisor sintonizado en un canal muerto."
+)
+
 
 BRANDSEN_NODE_ID = "!33695e54"
 WEATHER_REFRESH_SECONDS = 15  # 30 min
@@ -60,6 +67,26 @@ _SENTINEL_LOG_SLOTS = [
     ((2026, 6,  9, 20), ">> SENTINEL BBS // LOG PÚBLICO #1\n>> Red activa. 24hs de datos disponibles.\n>> URL: sentinelmesh.ar\n>> Que tal una partida de MeshWars?"),
     ((2026, 6, 12, 20), ">> SENTINEL BBS // LOG PÚBLICO #2\n>> Red activa. 24hs de datos disponibles.\n>> URL: sentinelmesh.ar\n>> Vamos Argentina!!!"),
     ((2026, 6, 14, 20), ">> SENTINEL BBS // LOG PÚBLICO #3\n>> Red activa. 24hs de datos disponibles.\n>> URL: sentinelmesh.ar\n>> Buen fin de semana!"),
+    ((2026, 8, 21, 16), "Podés entrar a https://sentinelmesh.ar para ver la actividad en vivo de la Sudoeste Mesh."),
+    ((2026, 8, 23, 16), "Podés entrar a https://sentinelmesh.ar para ver la actividad en vivo de la Sudoeste Mesh."),
+    ((2026, 8, 28, 16), "Podés entrar a https://sentinelmesh.ar para ver la actividad en vivo de la Sudoeste Mesh."),
+    ((2026, 8, 21, 14),
+     "⚠️ Corrección SMNAlert: la clave que mandamos hoy a las 13hs tenía un carácter de menos. La clave correcta es:\n"
+     "s5kHDQ1KmyL8e21jV/tZh5XA6MScZxOuC1WrgwysavY="),
+]
+
+# Invitación al canal SMNAlert — una vez por día en las fechas indicadas, al
+# canal 0 (primario), en 3 mensajes separados para poder copiar/pegar fácil
+# el nombre del canal y la clave.
+SMNALERT_INVITE_DATES = {(2026, 8, 21), (2026, 8, 23), (2026, 8, 28)}
+SMNALERT_INVITE_HOUR = 13  # hora local AR a la que se manda
+SMNALERT_INVITE_MESSAGES = [
+    "📡 SMNAlert es un canal que tenemos para reportar las alertas meteorológicas "
+    "de muy corto plazo y los reportes de alertas meteorológicas activas, "
+    "diariamente a las 11am y 18hs, para los partidos del sudoeste bonaerense.\n"
+    "A continuación, el nombre del canal y la clave que tienen que agregar:",
+    "SMNAlert",
+    "s5kHDQ1KmyL8e21jV/tZh5XA6MScZxOuC1WrgwysavY=",
 ]
 
 
@@ -71,8 +98,6 @@ class BBSSystem:
         self.interface.handle_message = self.handle_message
         self._last_smn_public_broadcast = 0
         self._last_smn_broadcast_content = None  # contenido del último broadcast emitido
-        self._smn_broadcast_slots_done = set()   # (date, hour) ya emitidos hoy
-        self._sentinel_log_sent = set()          # (year, month, day, hour) ya enviados
 
         store_forward.init_db()
         bbs_users.init_db()
@@ -94,21 +119,37 @@ class BBSSystem:
             logger.debug("SF tick called")
             now = time.time()
 
+            # Nota: las marcas de "ya enviado" se persisten en SQLite
+            # (traffic_stats.scheduled_broadcasts_sent), no solo en memoria,
+            # para que un restart del proceso durante la misma hora no
+            # dispare el mismo envío de nuevo.
             _now_dt = datetime.now()
-            _slot = (_now_dt.date(), _now_dt.hour)
-            if _now_dt.hour in SMN_BROADCAST_HOURS and _slot not in self._smn_broadcast_slots_done:
-                self._smn_broadcast_slots_done.add(_slot)
-                self.broadcast_smn_alerts_if_unchanged(force=True, hour=_now_dt.hour)
+            _today_str = _now_dt.strftime("%Y-%m-%d")
+
+            if _now_dt.hour in SMN_BROADCAST_HOURS:
+                _key = f"smn_report:{_today_str}:{_now_dt.hour}"
+                if not traffic_stats.broadcast_already_sent(_key):
+                    traffic_stats.mark_broadcast_sent(_key)
+                    self.broadcast_smn_alerts_if_unchanged(force=True, hour=_now_dt.hour)
 
             _now_key = (_now_dt.year, _now_dt.month, _now_dt.day, _now_dt.hour)
             for idx, (slot, _msg) in enumerate(_SENTINEL_LOG_SLOTS, start=1):
-                if _now_key == slot and slot not in self._sentinel_log_sent:
-                    self._sentinel_log_sent.add(slot)
-                    try:
-                        self.interface.send_channel_message(_msg, channel_index=0)
-                        logger.info("Sentinel Log #%d enviado al canal 0", idx)
-                    except Exception as _exc:
-                        logger.warning("Error enviando Sentinel Log #%d: %s", idx, _exc)
+                if _now_key == slot:
+                    _key = "sentinel_log:{}-{:02d}-{:02d}-{:02d}".format(*slot)
+                    if not traffic_stats.broadcast_already_sent(_key):
+                        traffic_stats.mark_broadcast_sent(_key)
+                        try:
+                            self.interface.send_channel_message(_msg, channel_index=0)
+                            logger.info("Sentinel Log #%d enviado al canal 0", idx)
+                        except Exception as _exc:
+                            logger.warning("Error enviando Sentinel Log #%d: %s", idx, _exc)
+
+            _today_ymd = (_now_dt.year, _now_dt.month, _now_dt.day)
+            if _today_ymd in SMNALERT_INVITE_DATES and _now_dt.hour == SMNALERT_INVITE_HOUR:
+                _key = f"smnalert_invite:{_today_str}"
+                if not traffic_stats.broadcast_already_sent(_key):
+                    traffic_stats.mark_broadcast_sent(_key)
+                    self.send_smnalert_invite()
 
             if (now - self._last_delivery) >= store_forward.DELIVERY_INTERVAL_SECONDS:
                 self._last_delivery = now
@@ -528,6 +569,9 @@ class BBSSystem:
                 continue
 
     def get_random_welcome_phrase(self) -> str:
+        _now = datetime.now()
+        if (_now.year, _now.month) == FIXED_WELCOME_PHRASE_PERIOD:
+            return FIXED_WELCOME_PHRASE
         return random.choice(BBS_WELCOME_PHRASES)
 
     def _extract_environment_metrics(self, info: dict):
@@ -906,6 +950,19 @@ class BBSSystem:
 
         except Exception as exc:
             logger.exception("Error broadcasting SMN alerts: %s", exc)
+
+    def send_smnalert_invite(self):
+        """Invitación al canal SMNAlert: 3 mensajes separados (texto, nombre, clave)
+        al canal 0 para que se puedan copiar/pegar fácil."""
+        try:
+            total = len(SMNALERT_INVITE_MESSAGES)
+            for idx, msg in enumerate(SMNALERT_INVITE_MESSAGES, start=1):
+                self.interface.send_channel_message(msg, channel_index=0)
+                logger.info("Invitación SMNAlert %d/%d enviada al canal 0", idx, total)
+                if idx < total:
+                    time.sleep(5)
+        except Exception:
+            logger.exception("Error enviando invitación SMNAlert")
 
     def build_short_term_alert_messages(self, alert: dict) -> list:
         """Devuelve una lista de mensajes, uno por partido afectado (header solo en el primero)."""
