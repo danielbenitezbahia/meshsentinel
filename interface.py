@@ -32,6 +32,7 @@ class Interface:
     def __init__(self):
         self.interface = None
         self.handle_message = None  # Callback for message handling
+        self.on_channel_message = None  # Callback opcional para mensajes de canal/broadcast
         self.on_tick = None  # callback opcional para tareas periódicas
         self.bbs = None
         self._own_node_id = None
@@ -44,6 +45,7 @@ class Interface:
         self._decrypt_key_used: dict = {}       # from_id → pub_key que funcionó para descifrar
         self._pending_new_node_notify: dict = {}  # node_id → datos del aviso en espera del traceroute
         self._traceroute_tick_last = 0
+        self._recent_channel_msg_ids: dict = {}   # packet_id → ts, para no reprocesar duplicados de mesh
 
     def load_device_path(self):
         """Load the device path from the configuration file."""
@@ -164,6 +166,23 @@ class Interface:
                 logger.error(f"Error during disconnection: {e}")
             finally:
                 self.interface = None
+
+    _DUPLICATE_PACKET_TTL = 300  # 5 min
+
+    def _is_duplicate_packet(self, packet_id) -> bool:
+        """True si ya procesamos este packet_id hace poco (mismo broadcast
+        escuchado varias veces por distintos relays de la mesh)."""
+        if not packet_id:
+            return False
+        now = time.time()
+        stale = [pid for pid, ts in self._recent_channel_msg_ids.items()
+                 if now - ts > self._DUPLICATE_PACKET_TTL]
+        for pid in stale:
+            del self._recent_channel_msg_ids[pid]
+        if packet_id in self._recent_channel_msg_ids:
+            return True
+        self._recent_channel_msg_ids[packet_id] = now
+        return False
 
     def on_receive(self, packet, interface):
         try:
@@ -511,9 +530,17 @@ class Interface:
             if portnum != "TEXT_MESSAGE_APP":
                 return
 
-            # Ignorar canal/broadcast
+            # Ignorar canal/broadcast (salvo que haya un callback interesado)
             if is_broadcast:
                 logger.info(f"Ignoring channel message from {sender}: {text}")
+                if self.on_channel_message and sender and not self._is_duplicate_packet(packet.get("id")):
+                    try:
+                        channel_idx = packet.get("channel", 0) or 0
+                        response = self.on_channel_message(sender, text, channel_idx)
+                        if response:
+                            self.send_channel_message(response, channel_index=channel_idx)
+                    except Exception:
+                        logger.exception("on_channel_message failed for %s", sender)
                 return
 
             # Handle standard DM text messages

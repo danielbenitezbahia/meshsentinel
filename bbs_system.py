@@ -53,6 +53,7 @@ BRANDSEN_NODE_ID = "!33695e54"
 WEATHER_REFRESH_SECONDS = 15  # 30 min
 SMN_PUBLIC_CHANNEL = "SMN_Alertas"
 SMN_BROADCAST_HOURS = {11, 18}  # horas locales en que se emite el resumen diario
+SMN_REPORT_RETRY_SECONDS = 180  # reintento del resumen diario mientras no haya nada que reportar
 SHORT_TERM_INTERVAL_SECONDS = 5 * 60  # cada 5 minutos
 SMN_SECRET_COMMAND = "SMN NOW 9XQ7"
 SMN_ALERTS_CHANNEL_INDEX = 1   # canal primario SMN_Alertas
@@ -89,6 +90,17 @@ SMNALERT_INVITE_MESSAGES = [
     "s5kHDQ1KmyL8e21jV/tZh5XA6MScZxOuC1WrgwysavY=",
 ]
 
+# Respuesta amistosa cuando alguien escribe en el canal SMNAlert preguntando/
+# comentando algo — hasta 2 por día por persona (una variante cada vez).
+SMNALERT_CHANNEL_REPLY_MESSAGES = [
+    "😄 Todo bien por acá, no se preocupen — el canal funciona normal. Si no sabían de mí "
+    "es porque no hay alertas meteorológicas vigentes para el sudoeste bonaerense en este "
+    "momento. Pero gracias por preguntar, se agradece que les importe mi salud 🙏",
+    "🤖 Sigo con vida, tranquilos. Simplemente no hay nada para alertar ahora mismo en la "
+    "zona — por eso el silencio. Igual gracias por el chequeo, cualquier cosa rara les "
+    "aviso enseguida 😉",
+]
+
 
 class BBSSystem:
     def __init__(self):
@@ -96,8 +108,12 @@ class BBSSystem:
         self.menu_modules = self.load_menu_modules()
         self.interface = Interface()
         self.interface.handle_message = self.handle_message
+        self.interface.on_channel_message = self.handle_channel_message
         self._last_smn_public_broadcast = 0
         self._last_smn_broadcast_content = None  # contenido del último broadcast emitido
+        self._last_smn_report_attempt = 0  # último intento del resumen diario (para reintentos)
+        self._smn_report_state = (None, None)  # (slot_key, contenido publicado) del resumen diario
+        self._smnalert_channel_replies: dict = {}  # sender_id → (fecha, cantidad hoy)
 
         store_forward.init_db()
         bbs_users.init_db()
@@ -128,9 +144,27 @@ class BBSSystem:
 
             if _now_dt.hour in SMN_BROADCAST_HOURS:
                 _key = f"smn_report:{_today_str}:{_now_dt.hour}"
-                if not traffic_stats.broadcast_already_sent(_key):
-                    traffic_stats.mark_broadcast_sent(_key)
-                    self.broadcast_smn_alerts_if_unchanged(force=True, hour=_now_dt.hour)
+                if (now - self._last_smn_report_attempt) >= SMN_REPORT_RETRY_SECONDS:
+                    self._last_smn_report_attempt = now
+                    _already_sent = traffic_stats.broadcast_already_sent(_key)
+                    _state_key, _prev_content = self._smn_report_state
+                    if _state_key != _key:
+                        _prev_content = None
+
+                    # Envío inicial: se reintenta durante la hora hasta que el
+                    # scraper (corre cada 10 min) tenga algo que reportar; solo
+                    # se marca el slot cuando realmente se publicó algo.
+                    # Ya enviado: se re-publica si el conjunto de alertas cambió
+                    # (solo mientras este proceso conserve qué mandó).
+                    if not _already_sent or _prev_content is not None:
+                        _did_send, _content = self.broadcast_smn_daily_report(
+                            hour=_now_dt.hour,
+                            previous_content=_prev_content if _already_sent else None,
+                        )
+                        if _did_send:
+                            self._smn_report_state = (_key, _content)
+                            if not _already_sent:
+                                traffic_stats.mark_broadcast_sent(_key)
 
             _now_key = (_now_dt.year, _now_dt.month, _now_dt.day, _now_dt.hour)
             for idx, (slot, _msg) in enumerate(_SENTINEL_LOG_SLOTS, start=1):
@@ -917,24 +951,37 @@ class BBSSystem:
             if idx < len(messages) - 1:
                 time.sleep(SMN_BETWEEN_PARTIDOS_DELAY)
 
-    def broadcast_smn_alerts_if_unchanged(self, force=False, hour: int = None):
+    def broadcast_smn_daily_report(self, hour: int, previous_content=None):
+        """Publica el resumen diario de alertas SMN al canal.
+
+        Envía si hay alertas vigentes y, o bien es el envío inicial de la franja
+        (previous_content is None), o bien el contenido cambió respecto de
+        previous_content (re-publicación por alerta nueva/actualizada).
+
+        Devuelve (se_publicó: bool, contenido_actual: str).
+        """
         try:
             messages = self.build_smn_messages_by_partido(hour=hour)
             if not messages:
-                logger.info("SMN broadcast diario: sin mensajes.")
-                return
+                logger.info("SMN resumen diario: sin alertas para reportar (hora=%s).", hour)
+                return False, ""
 
             content = "\n---\n".join(messages)
-            if force or content == self._last_smn_broadcast_content:
-                self._last_smn_broadcast_content = content
-                self._send_smn_messages(messages)
-                logger.info("SMN broadcast diario enviado (force=%s, partidos=%d)", force, len(messages))
-            else:
-                logger.info("SMN broadcast diario omitido: alertas actualizadas desde el último envío.")
-                self._last_smn_broadcast_content = content
+            if previous_content is not None and content == previous_content:
+                return False, content
+
+            self._send_smn_messages(messages)
+            self._last_smn_broadcast_content = content
+            logger.info(
+                "SMN resumen diario %s (hora=%s, partidos=%d).",
+                "re-publicado: alertas cambiaron" if previous_content is not None else "publicado",
+                hour, len(messages),
+            )
+            return True, content
 
         except Exception as exc:
-            logger.exception("Error en broadcast_smn_alerts_if_unchanged: %s", exc)
+            logger.exception("Error en broadcast_smn_daily_report: %s", exc)
+            return False, ""
 
     def broadcast_smn_alerts(self):
         try:
@@ -963,6 +1010,22 @@ class BBSSystem:
                     time.sleep(5)
         except Exception:
             logger.exception("Error enviando invitación SMNAlert")
+
+    def handle_channel_message(self, sender: str, text: str, channel_idx: int):
+        """Alguien escribió en un canal (no DM). Por ahora solo reacciona en
+        SMNAlert: responde amistosamente que el canal está activo, hasta 2
+        veces por día por persona."""
+        if channel_idx != SMN_ALERTS_CHANNEL_INDEX:
+            return None
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        last_date, count = self._smnalert_channel_replies.get(sender, (None, 0))
+        count = count + 1 if last_date == today else 1
+        self._smnalert_channel_replies[sender] = (today, count)
+
+        if count > len(SMNALERT_CHANNEL_REPLY_MESSAGES):
+            return None
+        return SMNALERT_CHANNEL_REPLY_MESSAGES[count - 1]
 
     def build_short_term_alert_messages(self, alert: dict) -> list:
         """Devuelve una lista de mensajes, uno por partido afectado (header solo en el primero)."""
