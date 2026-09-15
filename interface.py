@@ -1364,8 +1364,13 @@ class Interface:
     def send_channel_message(self, message, channel_index=0, chunk_delay=0.2):
         """
         Send a broadcast text message on a specific Meshtastic channel.
-        chunk_delay: segundos entre chunks (usá valores altos para alertas ordenadas).
+        Returns True only if every chunk was handed to the Meshtastic SDK.
+        Existing callers may ignore the return value.
         """
+        if not self.interface:
+            logger.warning("Cannot send channel message: Meshtastic interface is disconnected")
+            return False
+
         try:
             chunks = self._split_chunks(message, MAX_TEXT_LEN) if isinstance(message, str) else [str(message)]
 
@@ -1382,9 +1387,50 @@ class Interface:
                 )
                 if i < len(chunks):
                     time.sleep(chunk_delay)
+            return True
 
         except Exception as e:
             logger.error(f"Failed to send channel message on channelIndex={channel_index}: {e}")
+            return False
+
+    def send_channel_waypoint(
+        self,
+        *,
+        waypoint_id,
+        name,
+        description,
+        latitude,
+        longitude,
+        expire,
+        channel_index=0,
+        icon=ord("🔥"),
+    ):
+        """Send/update a Meshtastic waypoint on a channel and report success."""
+        if not self.interface:
+            logger.warning("Cannot send waypoint: Meshtastic interface is disconnected")
+            return False
+
+        try:
+            self.interface.sendWaypoint(
+                name=name,
+                description=description,
+                icon=icon,
+                expire=int(expire),
+                waypoint_id=int(waypoint_id),
+                latitude=float(latitude),
+                longitude=float(longitude),
+                destinationId="^all",
+                wantAck=False,
+                channelIndex=channel_index,
+            )
+            logger.info(
+                "Sent waypoint id=%s on channelIndex=%s at %.5f,%.5f",
+                waypoint_id, channel_index, latitude, longitude
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send waypoint id={waypoint_id} on channelIndex={channel_index}: {e}")
+            return False
 
 if __name__ == "__main__":
     interface = Interface()

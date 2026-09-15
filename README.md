@@ -193,3 +193,45 @@ meshsentinel/
 | `bbs_system.py` | `SMN_ALERTS_CHANNEL_INDEX_2` | Índice del canal secundario de alertas |
 | `api.py` | `DB_PATH` | Path a la base de datos de tráfico |
 | `api.py` | `FRONTEND_DIST` | Path al build del frontend |
+
+## NASA FIRMS - focos térmicos
+
+MeshSentinel puede consultar NASA FIRMS (VIIRS NOAA-20 y NOAA-21) y publicar focos térmicos del sudoeste bonaerense como mensaje + waypoint Meshtastic.
+
+### Configuración
+
+La integración queda deshabilitada si no existe `FIRMS_MAP_KEY`.
+
+```bash
+export FIRMS_MAP_KEY="TU_MAP_KEY_DE_NASA_FIRMS"
+```
+
+Opcionalmente se pueden elegir los índices de canal Meshtastic (por defecto `1,2`):
+
+```bash
+export FIRMS_CHANNEL_INDEXES="1,2"
+```
+
+No guardar la Map Key en el repositorio.
+
+### Comportamiento
+
+- Poll NASA FIRMS: cada 10 minutos.
+- Fuentes: `VIIRS_NOAA20_NRT` y `VIIRS_NOAA21_NRT`.
+- Se consulta `/2` y se filtran localmente las últimas 24 horas durante operación normal.
+- El primer arranque hace bootstrap de `/2` y evita retransmitir alertas históricas de más de 3 horas.
+- Píxeles de una misma pasada se agrupan a <= 1 km y <= 10 min.
+- Observaciones se asocian al mismo evento a <= 2.5 km y < 14 h.
+- Un único píxel nominal queda silencioso.
+- Una observación multipíxel o un píxel de confianza alta genera alerta inicial.
+- Dos pasadas del mismo satélite generan estado reiterado.
+- NOAA-20 + NOAA-21 generan estado multisatélite.
+- Los eventos cierran internamente tras 14 h sin observaciones; no se anuncia "extinción".
+- Cada alerta incluye enlace de Google Maps y un waypoint nativo de Meshtastic con TTL de 24 h.
+- Estado, deduplicación y outbox se persisten en `firms.sqlite`.
+
+### Tests FIRMS
+
+```bash
+python3 -m unittest discover -s tests -v
+```

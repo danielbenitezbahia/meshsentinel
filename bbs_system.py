@@ -14,6 +14,8 @@ import weather_alert_service
 import weather_alert_scraper
 import short_term_alert_scraper
 import traffic_stats
+import firms_notifier
+import firms_service
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,8 @@ SMN_SECRET_COMMAND = "SMN NOW 9XQ7"
 SMN_ALERTS_CHANNEL_INDEX = 1   # canal primario SMN_Alertas
 SMN_ALERTS_CHANNEL_INDEX_2 = 2  # canal secundario SMN_Alertas (sin clave)
 WEATHER_SCRAPER_INTERVAL_SECONDS = 10 * 60  # 10 minutos para actualizar alertas
+FIRMS_POLL_INTERVAL_SECONDS = 10 * 60
+FIRMS_DELIVERY_INTERVAL_SECONDS = 60
 PARTIDO_ORDER = ["Bahia Blanca", "Monte Hermoso", "Coronel Dorrego", "Tornquist"]
 SMN_BETWEEN_PARTIDOS_DELAY = 10  # segundos entre mensaje y mensaje
 NEW_NODE_NOTIFY_NODES = ["!da4846ec", "!33686e48"]  # pilgrim, daniel movil
@@ -120,11 +124,15 @@ class BBSSystem:
         bbs_messages.init_db()
         weather_alert_notifier.init_db()
         traffic_stats.init_db()
+        self.firms_service = firms_service.FirmsService()
 
         self._last_delivery = 0
         self._last_weather_alert_delivery = 0
         self._last_short_term_run = 0
         self._last_weather_scraper_run = 0
+        self._last_firms_poll = 0
+        self._last_firms_delivery = 0
+        self._last_firms_cleanup = 0
         self._last_cleanup_run = 0
         self._brandsen_weather = traffic_stats.load_brandsen_weather()
         self._last_brandsen_weather_refresh = 0
@@ -197,6 +205,14 @@ class BBSSystem:
                 self._last_weather_scraper_run = now
                 self.refresh_weather_alerts()
 
+            if (now - self._last_firms_poll) >= FIRMS_POLL_INTERVAL_SECONDS:
+                self._last_firms_poll = now
+                self.refresh_firms()
+
+            if (now - self._last_firms_delivery) >= FIRMS_DELIVERY_INTERVAL_SECONDS:
+                self._last_firms_delivery = now
+                self.deliver_firms()
+
             if (now - self._last_short_term_run) >= SHORT_TERM_INTERVAL_SECONDS:
                 self._last_short_term_run = now
                 self.check_short_term_alerts()
@@ -211,6 +227,11 @@ class BBSSystem:
                     logger.info("Cleanup diario de traffic_stats completado.")
                 except Exception as exc:
                     logger.warning("Error en cleanup diario: %s", exc)
+                try:
+                    cleanup = self.firms_service.prune_old_data()
+                    logger.info("Cleanup diario FIRMS completado: %s", cleanup)
+                except Exception as exc:
+                    logger.warning("Error en cleanup diario FIRMS: %s", exc)
 
         self.interface.on_tick = tick
 
@@ -733,6 +754,29 @@ class BBSSystem:
         pres = fmt(w.get("pres_hpa"), "hPa")
 
         return f"BRANDSEN> {temp} | {hum} | {pres}"
+
+
+    def refresh_firms(self):
+        """Poll NASA FIRMS and persist new detections/events/outbox actions."""
+        if not self.firms_service.enabled:
+            logger.debug("FIRMS disabled: FIRMS_MAP_KEY is not configured")
+            return
+        try:
+            result = self.firms_service.poll()
+            logger.info("FIRMS poll complete: %s", result)
+        except Exception as exc:
+            logger.exception("Error polling FIRMS: %s", exc)
+
+    def deliver_firms(self):
+        """Retry pending FIRMS text/waypoint actions independently from NASA polling."""
+        if not self.firms_service.enabled:
+            return
+        try:
+            sent = firms_notifier.process_pending_actions(self.interface, self.firms_service)
+            if sent:
+                logger.info("FIRMS outbox actions sent: %s", sent)
+        except Exception as exc:
+            logger.exception("Error delivering FIRMS outbox: %s", exc)
 
     def deliver_weather_alerts(self):
         try:
