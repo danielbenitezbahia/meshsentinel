@@ -32,7 +32,6 @@ class Interface:
     def __init__(self):
         self.interface = None
         self.handle_message = None  # Callback for message handling
-        self.on_channel_message = None  # Callback opcional para mensajes de canal/broadcast
         self.on_tick = None  # callback opcional para tareas periódicas
         self.bbs = None
         self._own_node_id = None
@@ -45,7 +44,6 @@ class Interface:
         self._decrypt_key_used: dict = {}       # from_id → pub_key que funcionó para descifrar
         self._pending_new_node_notify: dict = {}  # node_id → datos del aviso en espera del traceroute
         self._traceroute_tick_last = 0
-        self._recent_channel_msg_ids: dict = {}   # packet_id → ts, para no reprocesar duplicados de mesh
 
     def load_device_path(self):
         """Load the device path from the configuration file."""
@@ -166,23 +164,6 @@ class Interface:
                 logger.error(f"Error during disconnection: {e}")
             finally:
                 self.interface = None
-
-    _DUPLICATE_PACKET_TTL = 300  # 5 min
-
-    def _is_duplicate_packet(self, packet_id) -> bool:
-        """True si ya procesamos este packet_id hace poco (mismo broadcast
-        escuchado varias veces por distintos relays de la mesh)."""
-        if not packet_id:
-            return False
-        now = time.time()
-        stale = [pid for pid, ts in self._recent_channel_msg_ids.items()
-                 if now - ts > self._DUPLICATE_PACKET_TTL]
-        for pid in stale:
-            del self._recent_channel_msg_ids[pid]
-        if packet_id in self._recent_channel_msg_ids:
-            return True
-        self._recent_channel_msg_ids[packet_id] = now
-        return False
 
     def on_receive(self, packet, interface):
         try:
@@ -530,17 +511,9 @@ class Interface:
             if portnum != "TEXT_MESSAGE_APP":
                 return
 
-            # Ignorar canal/broadcast (salvo que haya un callback interesado)
+            # Ignorar canal/broadcast
             if is_broadcast:
                 logger.info(f"Ignoring channel message from {sender}: {text}")
-                if self.on_channel_message and sender and not self._is_duplicate_packet(packet.get("id")):
-                    try:
-                        channel_idx = packet.get("channel", 0) or 0
-                        response = self.on_channel_message(sender, text, channel_idx)
-                        if response:
-                            self.send_channel_message(response, channel_index=channel_idx)
-                    except Exception:
-                        logger.exception("on_channel_message failed for %s", sender)
                 return
 
             # Handle standard DM text messages
@@ -1264,16 +1237,45 @@ class Interface:
         logger.info("traceroute: queue refilled with %d nodes", len(self._traceroute_queue))
 
     def _send_traceroute(self, node_id: str):
+        """Envía un traceroute sin bloquear el loop principal.
+
+        OJO: no usar interface.sendTraceRoute() — esa llamada de la librería
+        termina en waitForTraceRoute(), que bloquea el thread (hasta ~30 min
+        si el nodo no responde) y frena FIRMS/SMN/el resto de tick(). En su
+        lugar mandamos el mismo paquete con sendData() y devolvemos el control
+        de inmediato. La respuesta, si llega, se procesa igual que siempre en
+        on_receive() vía el tópico pubsub 'meshtastic.receive.traceroute' —
+        eso no depende de sendTraceRoute() y sigue funcionando sin cambios.
+        """
         try:
+            from meshtastic.protobuf import mesh_pb2, portnums_pb2
+
             dest = int(node_id.lstrip("!"), 16)
-            self.interface.sendTraceRoute(dest, hopLimit=5)
-            logger.debug("traceroute sent to %s", node_id)
+            route = mesh_pb2.RouteDiscovery()
+            self.interface.sendData(
+                route,
+                destinationId=dest,
+                portNum=portnums_pb2.PortNum.TRACEROUTE_APP,
+                wantResponse=True,
+                onResponse=self._on_traceroute_response,
+                hopLimit=5,
+            )
+            logger.debug("traceroute sent async to %s", node_id)
         except Exception:
             logger.exception("traceroute: failed to send to %s", node_id)
 
+    def _on_traceroute_response(self, p: dict):
+        """Callback de sendData() para el requestId del traceroute (no bloqueante).
+
+        No procesa la ruta acá: eso ya lo hace on_receive() vía pubsub para
+        cualquier respuesta de traceroute, se haya registrado este callback o
+        no. Queda solo para trazabilidad en el log.
+        """
+        logger.debug("traceroute response (async) requestId=%s", p.get("id"))
+
     def _tick_traceroute(self, now: float):
         REFILL_INTERVAL = 1800   # refill queue every 30 min
-        SEND_INTERVAL   = 15     # one traceroute every 15 s
+        SEND_INTERVAL   = 35     # firmware rate-limita a 1 traceroute/30s; margen de seguridad
 
         if not self.interface or not self._own_node_id:
             return
@@ -1431,6 +1433,46 @@ class Interface:
         except Exception as e:
             logger.error(f"Failed to send waypoint id={waypoint_id} on channelIndex={channel_index}: {e}")
             return False
+
+    def send_channel_waypoint_delete(self, *, waypoint_id, channel_index=0):
+        """Delete a Meshtastic waypoint by broadcasting the same waypoint id with expire=0."""
+        if not self.interface:
+            logger.warning("Cannot delete waypoint: Meshtastic interface is disconnected")
+            return False
+
+        try:
+            delete_waypoint = getattr(self.interface, "deleteWaypoint", None)
+            if callable(delete_waypoint):
+                delete_waypoint(
+                    waypoint_id=int(waypoint_id),
+                    destinationId="^all",
+                    wantAck=False,
+                    channelIndex=channel_index,
+                )
+            else:
+                # Compatibility fallback for older python clients: a WAYPOINT_APP
+                # packet with the same id and expire=0 is the delete operation.
+                self.interface.sendWaypoint(
+                    name="",
+                    description="",
+                    icon=0,
+                    expire=0,
+                    waypoint_id=int(waypoint_id),
+                    latitude=0.0,
+                    longitude=0.0,
+                    destinationId="^all",
+                    wantAck=False,
+                    channelIndex=channel_index,
+                )
+            logger.info(
+                "Deleted waypoint id=%s on channelIndex=%s",
+                waypoint_id, channel_index,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete waypoint id={waypoint_id} on channelIndex={channel_index}: {e}")
+            return False
+
 
 if __name__ == "__main__":
     interface = Interface()

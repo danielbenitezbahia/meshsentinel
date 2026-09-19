@@ -11,6 +11,11 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# urllib3 loguea la URL completa de cada request a nivel DEBUG (incluye
+# FIRMS_MAP_KEY en el path). Subimos solo ese logger a WARNING para que la key
+# no quede en el log; no toca el nivel DEBUG general de la app.
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 FIRMS_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 FIRMS_SOURCES = ("VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT")
 FIRMS_BBOX = (-64.5, -41.5, -60.5, -36.5)  # west, south, east, north

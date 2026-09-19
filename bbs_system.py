@@ -94,17 +94,6 @@ SMNALERT_INVITE_MESSAGES = [
     "s5kHDQ1KmyL8e21jV/tZh5XA6MScZxOuC1WrgwysavY=",
 ]
 
-# Respuesta amistosa cuando alguien escribe en el canal SMNAlert preguntando/
-# comentando algo — hasta 2 por día por persona (una variante cada vez).
-SMNALERT_CHANNEL_REPLY_MESSAGES = [
-    "😄 Todo bien por acá, no se preocupen — el canal funciona normal. Si no sabían de mí "
-    "es porque no hay alertas meteorológicas vigentes para el sudoeste bonaerense en este "
-    "momento. Pero gracias por preguntar, se agradece que les importe mi salud 🙏",
-    "🤖 Sigo con vida, tranquilos. Simplemente no hay nada para alertar ahora mismo en la "
-    "zona — por eso el silencio. Igual gracias por el chequeo, cualquier cosa rara les "
-    "aviso enseguida 😉",
-]
-
 
 class BBSSystem:
     def __init__(self):
@@ -112,12 +101,10 @@ class BBSSystem:
         self.menu_modules = self.load_menu_modules()
         self.interface = Interface()
         self.interface.handle_message = self.handle_message
-        self.interface.on_channel_message = self.handle_channel_message
         self._last_smn_public_broadcast = 0
         self._last_smn_broadcast_content = None  # contenido del último broadcast emitido
         self._last_smn_report_attempt = 0  # último intento del resumen diario (para reintentos)
         self._smn_report_state = (None, None)  # (slot_key, contenido publicado) del resumen diario
-        self._smnalert_channel_replies: dict = {}  # sender_id → (fecha, cantidad hoy)
 
         store_forward.init_db()
         bbs_users.init_db()
@@ -1054,22 +1041,6 @@ class BBSSystem:
                     time.sleep(5)
         except Exception:
             logger.exception("Error enviando invitación SMNAlert")
-
-    def handle_channel_message(self, sender: str, text: str, channel_idx: int):
-        """Alguien escribió en un canal (no DM). Por ahora solo reacciona en
-        SMNAlert: responde amistosamente que el canal está activo, hasta 2
-        veces por día por persona."""
-        if channel_idx != SMN_ALERTS_CHANNEL_INDEX:
-            return None
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        last_date, count = self._smnalert_channel_replies.get(sender, (None, 0))
-        count = count + 1 if last_date == today else 1
-        self._smnalert_channel_replies[sender] = (today, count)
-
-        if count > len(SMNALERT_CHANNEL_REPLY_MESSAGES):
-            return None
-        return SMNALERT_CHANNEL_REPLY_MESSAGES[count - 1]
 
     def build_short_term_alert_messages(self, alert: dict) -> list:
         """Devuelve una lista de mensajes, uno por partido afectado (header solo en el primero)."""
