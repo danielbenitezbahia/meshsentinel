@@ -206,11 +206,11 @@ class BBSSystem:
 
             self.refresh_brandsen_weather_if_needed()
 
-            # Cleanup diario: elimina series temporales > 7 días
+            # Cleanup diario: elimina series temporales > 30 días
             if (now - self._last_cleanup_run) >= 86400:
                 self._last_cleanup_run = now
                 try:
-                    traffic_stats.cleanup_old_data(days=7)
+                    traffic_stats.cleanup_old_data(days=30)
                     logger.info("Cleanup diario de traffic_stats completado.")
                 except Exception as exc:
                     logger.warning("Error en cleanup diario: %s", exc)

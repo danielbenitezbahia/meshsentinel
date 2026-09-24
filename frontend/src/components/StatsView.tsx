@@ -8,6 +8,7 @@ import {
   Tooltip, Legend,
 } from "recharts";
 import { fetchTrafficStats, fetchTrafficEvolution, fetchStatsNodes, fetchChannelUtil } from "../api";
+import { todayAR, addDays, formatDateLabel } from "../dateUtils";
 import type { TrafficStats, EvolutionPoint, StatsNodeEntry, ChannelUtilNodeSeries } from "../types";
 
 type Period = "day" | "week" | "month";
@@ -119,6 +120,7 @@ export default function StatsView() {
   const [evolution, setEvolution] = useState<EvolutionPoint[]>([]);
   const [nodes, setNodes]         = useState<{ public: StatsNodeEntry[]; other_mesh: StatsNodeEntry[]; private_encrypted: StatsNodeEntry[] } | null>(null);
   const [chanUtil, setChanUtil]   = useState<{ labels: string[]; nodes: ChannelUtilNodeSeries[] } | null>(null);
+  const [chanUtilDate, setChanUtilDate] = useState<string>(todayAR);
   const [loading, setLoading]     = useState(false);
 
   const load = useCallback(() => {
@@ -127,19 +129,34 @@ export default function StatsView() {
       fetchTrafficStats(period),
       fetchTrafficEvolution(period),
       fetchStatsNodes(period),
-      fetchChannelUtil(period).catch(() => ({ period, labels: [], nodes: [] })),
     ])
-      .then(([s, e, n, cu]) => {
+      .then(([s, e, n]) => {
         setStats(s);
         setEvolution(e.points);
         setNodes(n);
-        setChanUtil({ labels: cu.labels, nodes: cu.nodes });
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [period]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Utilización del canal: fecha propia, independiente del resto de las cards.
+  // Solo tiene sentido navegar día a día en el tab "Día" (hora por hora);
+  // en Semana/Mes cada punto ya es un día, así que se ignora chanUtilDate.
+  const loadChanUtil = useCallback(() => {
+    fetchChannelUtil(period, period === "day" ? chanUtilDate : undefined)
+      .then((cu) => setChanUtil({ labels: cu.labels, nodes: cu.nodes }))
+      .catch(() => setChanUtil({ labels: [], nodes: [] }));
+  }, [period, chanUtilDate]);
+
+  useEffect(() => { loadChanUtil(); }, [loadChanUtil]);
+
+  const today = todayAR();
+  const goChanUtilDay = (delta: number) => {
+    const next = addDays(chanUtilDate, delta);
+    if (next <= today) setChanUtilDate(next);
+  };
 
   // Donut data
   const donutData = stats ? [
@@ -162,6 +179,10 @@ export default function StatsView() {
   const evolTitle = period === "day" ? "por hora (hoy)"
                   : period === "week" ? "últimos 7 días"
                   : "últimos 30 días";
+
+  const chanUtilTitle = period !== "day"
+    ? evolTitle
+    : chanUtilDate === today ? "por hora (hoy)" : `por hora · ${formatDateLabel(chanUtilDate)}`;
 
   // Build recharts-friendly wide-format points for channel utilization
   const chanUtilPoints = chanUtil
@@ -188,7 +209,7 @@ export default function StatsView() {
             </button>
           ))}
         </div>
-        <button className="btn-refresh" onClick={load} disabled={loading}>
+        <button className="btn-refresh" onClick={() => { load(); loadChanUtil(); }} disabled={loading}>
           {loading ? "…" : "↺"}
         </button>
       </div>
@@ -290,7 +311,22 @@ export default function StatsView() {
 
       {/* Utilización del canal RF */}
       <div className="stats-chart-card stats-chart-full">
-        <div className="chart-title">Utilización del canal · {evolTitle}</div>
+        <div className="chart-title-row">
+          <div className="chart-title">Utilización del canal · {chanUtilTitle}</div>
+          {period === "day" && (
+            <div className="heatmap-nav">
+              <button className="hm-nav-btn" onClick={() => goChanUtilDay(-1)}>←</button>
+              <input
+                type="date"
+                className="hm-date-input"
+                value={chanUtilDate}
+                max={today}
+                onChange={(e) => { if (e.target.value) setChanUtilDate(e.target.value); }}
+              />
+              <button className="hm-nav-btn" onClick={() => goChanUtilDay(1)} disabled={chanUtilDate >= today}>→</button>
+            </div>
+          )}
+        </div>
         {chanUtil && chanUtil.nodes.length === 0 ? (
           <div className="rank-empty" style={{ padding: "2rem 0", textAlign: "center" }}>Sin datos de telemetría</div>
         ) : (

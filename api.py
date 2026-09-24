@@ -756,7 +756,20 @@ def get_stats_nodes():
 @app.get("/api/stats/channel-util")
 def get_channel_util():
     period = request.args.get("period", "day")
-    since  = _stats_since(period)
+
+    day_date = None
+    if period == "day":
+        date_str = request.args.get("date")
+        try:
+            day_date = datetime.date.fromisoformat(date_str) if date_str else datetime.date.today()
+        except ValueError:
+            return jsonify({"error": "invalid date"}), 400
+        # Argentina es UTC-3: medianoche local = 03:00 UTC
+        since = calendar.timegm((day_date.year, day_date.month, day_date.day, 3, 0, 0, 0, 0, 0))
+        until = since + 86400
+    else:
+        since = _stats_since(period)
+        until = None
 
     label_expr = (
         "strftime('%H:00', ts, 'unixepoch', 'localtime')"
@@ -764,19 +777,34 @@ def get_channel_util():
         else "date(ts, 'unixepoch', 'localtime')"
     )
 
-    rows = _q(f"""
-        SELECT {label_expr} AS label,
-               dm.node_id,
-               ROUND(AVG(dm.channel_util), 1) AS avg_util,
-               ROUND(AVG(dm.air_util_tx),  1) AS avg_air_tx
-        FROM device_metrics dm
-        WHERE dm.ts >= ? AND dm.channel_util IS NOT NULL
-        GROUP BY label, dm.node_id
-        ORDER BY MIN(dm.ts) ASC, dm.node_id
-    """, (since,))
+    if until is not None:
+        rows = _q(f"""
+            SELECT {label_expr} AS label,
+                   dm.node_id,
+                   ROUND(AVG(dm.channel_util), 1) AS avg_util,
+                   ROUND(AVG(dm.air_util_tx),  1) AS avg_air_tx
+            FROM device_metrics dm
+            WHERE dm.ts >= ? AND dm.ts < ? AND dm.channel_util IS NOT NULL
+            GROUP BY label, dm.node_id
+            ORDER BY MIN(dm.ts) ASC, dm.node_id
+        """, (since, until))
+    else:
+        rows = _q(f"""
+            SELECT {label_expr} AS label,
+                   dm.node_id,
+                   ROUND(AVG(dm.channel_util), 1) AS avg_util,
+                   ROUND(AVG(dm.air_util_tx),  1) AS avg_air_tx
+            FROM device_metrics dm
+            WHERE dm.ts >= ? AND dm.channel_util IS NOT NULL
+            GROUP BY label, dm.node_id
+            ORDER BY MIN(dm.ts) ASC, dm.node_id
+        """, (since,))
 
     if not rows:
-        return jsonify({"period": period, "labels": [], "nodes": []})
+        empty = {"period": period, "labels": [], "nodes": []}
+        if day_date is not None:
+            empty["date"] = str(day_date)
+        return jsonify(empty)
 
     # Ordered unique labels
     labels = list(dict.fromkeys(r["label"] for r in rows))
@@ -809,7 +837,10 @@ def get_channel_util():
         for nid in node_ids_ordered
     ]
 
-    return jsonify({"period": period, "labels": labels, "nodes": nodes_out})
+    result = {"period": period, "labels": labels, "nodes": nodes_out}
+    if day_date is not None:
+        result["date"] = str(day_date)
+    return jsonify(result)
 
 
 @app.get("/api/events/nodes")

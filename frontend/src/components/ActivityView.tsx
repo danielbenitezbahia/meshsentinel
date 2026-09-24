@@ -1,26 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { fetchActivityHeatmap, fetchActivityAlerts, fetchLocalities, fetchEnergyDay, fetchVisits, fetchGames } from "../api";
+import { todayAR, addDays, formatDateLabel } from "../dateUtils";
 import type { ActivityHeatmapNode, ActivityAlert, Locality, NodeEnvMetrics, NodeEnergyData, EnergyReading, VisitRow, GameRow } from "../types";
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const REFRESH_MS      = 15 * 60 * 1000;  // 15 min — refresca todo
 const ALERTS_EXTRA_MS =  5 * 60 * 1000;  // alerts también cada 5 min
-
-function todayAR(): string {
-  const ar = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  return ar.toISOString().slice(0, 10);
-}
-
-function addDays(date: string, delta: number): string {
-  const d = new Date(date + "T12:00:00Z");
-  d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString().slice(0, 10);
-}
-
-function formatDateLabel(date: string): string {
-  const [y, m, d] = date.split("-");
-  return `${d}/${m}/${y}`;
-}
 
 function slotLabel(slot: number): string {
   const h = String(Math.floor(slot / 2)).padStart(2, "0");

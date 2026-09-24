@@ -327,6 +327,7 @@ export interface ChannelUtilResponse {
   period: string;
   labels: string[];
   nodes: ChannelUtilNodeSeries[];
+  date?: string;
 }
 
 export interface GameRow {

@@ -343,6 +343,18 @@ body, #root {
   margin-bottom: 12px;
 }
 
+.chart-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.chart-title-row .chart-title {
+  margin-bottom: 0;
+}
+
 /* ── Ranking nodos ── */
 .rank-grid {
   display: grid;

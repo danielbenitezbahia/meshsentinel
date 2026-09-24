@@ -120,8 +120,9 @@ export async function fetchGames(period: "daily" | "monthly" | "yearly"): Promis
   return res.json();
 }
 
-export async function fetchChannelUtil(period: string): Promise<ChannelUtilResponse> {
-  const res = await fetch(`${API_BASE}/api/stats/channel-util?period=${period}`);
+export async function fetchChannelUtil(period: string, date?: string): Promise<ChannelUtilResponse> {
+  const qs = date ? `period=${period}&date=${date}` : `period=${period}`;
+  const res = await fetch(`${API_BASE}/api/stats/channel-util?${qs}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
