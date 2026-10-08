@@ -8,6 +8,24 @@ export async function fetchGraph(): Promise<GraphResponse> {
   return res.json();
 }
 
+// altitude=null borra el override (vuelve a relieve/GPS según el toggle)
+export async function setNodeAltitudeOverride(
+  nodeId: string,
+  altitude: number | null,
+  secret: string
+): Promise<{ ok: boolean; node_id: string; altitude_override: number | null }> {
+  const res = await fetch(`${API_BASE}/api/mesh/altitude-override`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ node_id: nodeId, altitude, secret }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchNodes(): Promise<NodesResponse> {
   const res = await fetch(`${API_BASE}/api/mesh/nodes`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

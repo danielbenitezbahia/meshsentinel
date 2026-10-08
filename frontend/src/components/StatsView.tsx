@@ -65,6 +65,11 @@ function ChannelUtilTooltip({ active, payload, label }: any) {
         borderRadius: 6,
         maxHeight: 280,
         overflowY: "auto",
+        // Ancla el tooltip por su borde inferior a la posición del cursor,
+        // así crece hacia arriba en vez de hacia abajo: con rankings largos,
+        // creciendo para abajo el final de la lista quedaba fuera de la
+        // pantalla en vez de simplemente scrollear dentro del tooltip.
+        transform: "translateY(calc(-100% - 12px))",
       }}
     >
       <div style={{ color: "#90a4ae", marginBottom: 4 }}>{label}</div>

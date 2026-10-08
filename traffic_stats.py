@@ -137,6 +137,7 @@ def init_db():
         ("altitude", "INTEGER"), ("position_ts", "INTEGER"),
         ("partido", "TEXT"),
         ("status_message", "TEXT"),
+        ("altitude_override", "REAL"),  # altura manual para el mapa 3D (pisa relieve/GPS)
     ]:
         try:
             cur.execute(f"ALTER TABLE node_stats ADD COLUMN {col} {typedef}")

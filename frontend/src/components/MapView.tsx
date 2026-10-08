@@ -2,27 +2,13 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { MeshNode, MeshEdge } from "../types";
+import { hashNodeColor, isRecentEnoughForMap } from "../mapVisuals";
 
 interface Props {
   nodes: MeshNode[];
   edges: MeshEdge[];
   selectedId: string | null;
   onSelectNode: (id: string) => void;
-}
-
-const PALETTE = [
-  "#7b1fa2", "#c62828", "#e65100", "#2e7d32",
-  "#1565c0", "#00695c", "#4527a0", "#880e4f",
-  "#4e342e", "#01579b", "#558b2f", "#f57f17",
-  "#37474f", "#6a1520", "#006064", "#827717",
-];
-
-function hashNodeColor(nodeId: string): string {
-  let h = 0;
-  for (let i = 0; i < nodeId.length; i++) {
-    h = (h * 31 + nodeId.charCodeAt(i)) >>> 0;
-  }
-  return PALETTE[h % PALETTE.length];
 }
 
 function nodeOpacity(node: MeshNode): number {
@@ -65,7 +51,7 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const nodesWithPos = nodes.filter((n) => n.lat != null && n.lon != null);
+    const nodesWithPos = nodes.filter((n) => n.lat != null && n.lon != null && isRecentEnoughForMap(n.last_seen_mins_ago));
     if (nodesWithPos.length === 0) return;
 
     if (!mapRef.current) {
@@ -131,7 +117,7 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
     return () => { mapRef.current?.remove(); mapRef.current = null; };
   }, []);
 
-  const withPos = nodes.filter((n) => n.lat != null).length;
+  const withPos = nodes.filter((n) => n.lat != null && isRecentEnoughForMap(n.last_seen_mins_ago)).length;
   const withoutPos = nodes.length - withPos;
 
   return (
@@ -143,7 +129,7 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
         padding: "4px 8px", borderRadius: 4, fontSize: 11,
         border: "1px solid #1e3a5f",
       }}>
-        {withPos} con GPS · {withoutPos} sin posición
+        {withPos} en el mapa · {withoutPos} sin posición o antiguos
       </div>
     </div>
   );

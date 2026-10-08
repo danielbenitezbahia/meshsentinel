@@ -37,6 +37,7 @@ def _migrate():
         ("hops_from_bbs", "INTEGER"), ("snr_from_bbs", "REAL"),
         ("lat", "REAL"), ("lon", "REAL"),
         ("altitude", "INTEGER"), ("position_ts", "INTEGER"),
+        ("altitude_override", "REAL"),
     ]:
         try:
             cur.execute(f"ALTER TABLE node_stats ADD COLUMN {col} {typedef}")
@@ -290,7 +291,7 @@ def get_graph():
         SELECT ns.node_id, ns.short_name, ns.long_name,
                ns.last_seen_ts, ns.hops_from_bbs, ns.snr_from_bbs,
                ns.packets_total, ns.errors_total,
-               ns.lat, ns.lon, ns.altitude, ns.position_ts,
+               ns.lat, ns.lon, ns.altitude, ns.position_ts, ns.altitude_override,
                (SELECT COUNT(*) FROM node_neighbors WHERE reporter = ns.node_id) AS neighbor_count
         FROM node_stats ns
         ORDER BY ns.last_seen_ts DESC
@@ -317,6 +318,44 @@ def get_graph():
         "edge_count": len(edges),
         "graph_freshness": _freshness(),
     })
+
+
+# Clave para poder fijar a mano la altura de un nodo en el mapa 3D (pisa
+# relieve y altura reportada por GPS). Sin esto, cualquiera con devtools en
+# la web pública podría pisar la altura de cualquier nodo.
+MESH3D_OVERRIDE_SECRET = "cUWzrYjHfo2B3vBc-e0rDh0P"
+
+
+@app.post("/api/mesh/altitude-override")
+def set_altitude_override():
+    data = request.get_json(silent=True) or {}
+    if data.get("secret") != MESH3D_OVERRIDE_SECRET:
+        return jsonify({"error": "forbidden"}), 403
+
+    node_id = data.get("node_id")
+    if not node_id:
+        return jsonify({"error": "node_id requerido"}), 400
+
+    altitude = data.get("altitude")
+    if altitude is not None:
+        try:
+            altitude = float(altitude)
+        except (TypeError, ValueError):
+            return jsonify({"error": "altitude inválida"}), 400
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute(
+        "UPDATE node_stats SET altitude_override = ? WHERE node_id = ?",
+        (altitude, node_id),
+    )
+    con.commit()
+    found = cur.rowcount > 0
+    con.close()
+
+    if not found:
+        return jsonify({"error": f"nodo '{node_id}' no encontrado"}), 404
+
+    return jsonify({"ok": True, "node_id": node_id, "altitude_override": altitude})
 
 
 @app.get("/api/mesh/nodes")

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, lazy, Suspense } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { fetchGraph } from "./api";
 import type { MeshNode, MeshEdge, GraphFreshness } from "./types";
@@ -9,6 +9,10 @@ import StatsView from "./components/StatsView";
 import MeshWarsView from "./components/MeshWarsView";
 import ActivityView from "./components/ActivityView";
 import "./App.css";
+
+// MapLibre GL pesa bastante (WebGL) — carga diferida para no inflar el
+// bundle de las pestañas que no lo necesitan.
+const Mesh3DView = lazy(() => import("./components/Mesh3DView"));
 
 function MeshView() {
   const [nodes, setNodes] = useState<MeshNode[]>([]);
@@ -138,6 +142,7 @@ export default function App() {
       <nav className="tabbar">
         <span className="tabbar-brand">Sentinel BBS</span>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/mesh">Mesh</NavLink>
+        <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/mesh3d">Mesh 3D</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/trayectorias">Trayectorias</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/estadisticas">Estadísticas</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/actividad">Actividad</NavLink>
@@ -147,6 +152,14 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/mesh" replace />} />
         <Route path="/mesh" element={<MeshView />} />
+        <Route
+          path="/mesh3d"
+          element={
+            <Suspense fallback={<div className="app-loading">Cargando mapa 3D…</div>}>
+              <Mesh3DView />
+            </Suspense>
+          }
+        />
         <Route path="/trayectorias" element={<TrackView />} />
         <Route path="/estadisticas" element={<StatsView />} />
         <Route path="/actividad" element={<ActivityView />} />

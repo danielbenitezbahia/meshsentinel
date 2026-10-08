@@ -13,6 +13,7 @@ export interface MeshNode {
   lon: number | null;
   altitude: number | null;
   position_ts: number | null;
+  altitude_override: number | null;
   channel_util_avg_24h?: number | null;
   battery_level?: number | null;
   voltage?: number | null;

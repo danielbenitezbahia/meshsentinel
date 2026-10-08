@@ -32,11 +32,11 @@ class Interface:
     def __init__(self):
         self.interface = None
         self.handle_message = None  # Callback for message handling
+        self.on_channel_message = None  # Callback opcional para mensajes de canal/broadcast
         self.on_tick = None  # callback opcional para tareas periódicas
         self.bbs = None
         self._own_node_id = None
         self._traceroute_queue: deque = deque()
-        self._traceroute_last_refill = 0
         self._traceroute_last_send = 0
         self._channel_hash_to_name: dict = {}  # hash → nombre del canal
         self._track_traceroute_last: dict = {}  # node_id → último traceroute por movimiento
@@ -44,6 +44,7 @@ class Interface:
         self._decrypt_key_used: dict = {}       # from_id → pub_key que funcionó para descifrar
         self._pending_new_node_notify: dict = {}  # node_id → datos del aviso en espera del traceroute
         self._traceroute_tick_last = 0
+        self._recent_channel_msg_ids: dict = {}   # packet_id → ts, para no reprocesar duplicados de mesh
 
     def load_device_path(self):
         """Load the device path from the configuration file."""
@@ -164,6 +165,23 @@ class Interface:
                 logger.error(f"Error during disconnection: {e}")
             finally:
                 self.interface = None
+
+    _DUPLICATE_PACKET_TTL = 300  # 5 min
+
+    def _is_duplicate_packet(self, packet_id) -> bool:
+        """True si ya procesamos este packet_id hace poco (mismo broadcast
+        escuchado varias veces por distintos relays de la mesh)."""
+        if not packet_id:
+            return False
+        now = time.time()
+        stale = [pid for pid, ts in self._recent_channel_msg_ids.items()
+                 if now - ts > self._DUPLICATE_PACKET_TTL]
+        for pid in stale:
+            del self._recent_channel_msg_ids[pid]
+        if packet_id in self._recent_channel_msg_ids:
+            return True
+        self._recent_channel_msg_ids[packet_id] = now
+        return False
 
     def on_receive(self, packet, interface):
         try:
@@ -405,19 +423,17 @@ class Interface:
                 if not isinstance(tr, dict):
                     tr = {}
                 route_nums = tr.get("route") or []
-                snr_list = tr.get("snrTowards") or tr.get("snr_towards") or []
                 if route_nums and self._own_node_id and sender:
                     # Build full path: own_bbs → intermediates → sender
                     path = [self._own_node_id] + [f"!{n:08x}" for n in route_nums]
                     if sender not in path:
                         path.append(sender)
-                    # Derive SNR per link from snrList (fixed-point ×4, sint32)
-                    snr_decoded = [(s / 4.0) if s != 0 else None for s in snr_list]
-                    # Record each consecutive pair as a neighbor link
-                    for i in range(len(path) - 1):
-                        a, b = path[i], path[i + 1]
-                        snr = snr_decoded[i] if i < len(snr_decoded) else None
-                        traffic_stats.record_neighbors(a, [{"node_id": b, "snr": snr}])
+                    # NOTA: ya no se graba en node_neighbors acá (eso alimentaba el
+                    # grafo de la pestaña Mesh). El grafo ahora se arma solo con
+                    # vecinos escuchados pasivamente por NEIGHBORINFO_APP; el
+                    # traceroute sigue disparándose y usándose para lo demás
+                    # (path completo, backfill de relay_node, heard_by, aviso de
+                    # nodo nuevo con ruta).
                     # Store full path for web display
                     traffic_stats.record_traceroute_path(sender, path)
                     # Backfill relay_node en puntos recientes sin relay (últimos 10 min)
@@ -511,9 +527,17 @@ class Interface:
             if portnum != "TEXT_MESSAGE_APP":
                 return
 
-            # Ignorar canal/broadcast
+            # Ignorar canal/broadcast (salvo que haya un callback interesado)
             if is_broadcast:
                 logger.info(f"Ignoring channel message from {sender}: {text}")
+                if self.on_channel_message and sender and not self._is_duplicate_packet(packet.get("id")):
+                    try:
+                        channel_idx = packet.get("channel", 0) or 0
+                        response = self.on_channel_message(sender, text, channel_idx)
+                        if response:
+                            self.send_channel_message(response, channel_index=channel_idx)
+                    except Exception:
+                        logger.exception("on_channel_message failed for %s", sender)
                 return
 
             # Handle standard DM text messages
@@ -1218,24 +1242,6 @@ class Interface:
         self._track_traceroute_last[node_id] = now
         logger.info("traceroute prioritized for moving node %s", node_id)
 
-    def _refill_traceroute_queue(self):
-        """Carga todos los nodos vistos en las últimas 2h (excepto el propio) en la cola."""
-        import sqlite3 as _sq
-        now = int(time.time())
-        since = now - 7200
-        try:
-            con = _sq.connect(traffic_stats.DB_PATH)
-            rows = con.execute(
-                "SELECT node_id FROM node_stats WHERE last_seen_ts >= ?", (since,)
-            ).fetchall()
-            con.close()
-        except Exception:
-            logger.exception("traceroute: error querying node_stats")
-            return
-        candidates = [r[0] for r in rows if r[0] != self._own_node_id]
-        self._traceroute_queue = deque(candidates)
-        logger.info("traceroute: queue refilled with %d nodes", len(self._traceroute_queue))
-
     def _send_traceroute(self, node_id: str):
         """Envía un traceroute sin bloquear el loop principal.
 
@@ -1274,16 +1280,16 @@ class Interface:
         logger.debug("traceroute response (async) requestId=%s", p.get("id"))
 
     def _tick_traceroute(self, now: float):
-        REFILL_INTERVAL = 1800   # refill queue every 30 min
-        SEND_INTERVAL   = 35     # firmware rate-limita a 1 traceroute/30s; margen de seguridad
+        SEND_INTERVAL = 35  # firmware rate-limita a 1 traceroute/30s; margen de seguridad
 
         if not self.interface or not self._own_node_id:
             return
 
-        if now - self._traceroute_last_refill >= REFILL_INTERVAL:
-            self._refill_traceroute_queue()
-            self._traceroute_last_refill = now
-
+        # La cola ya no se repuebla periódicamente con todos los nodos activos
+        # (eso era para mantener fresco el grafo de la pestaña Mesh, que ahora
+        # se arma solo con vecinos escuchados pasivamente vía NEIGHBORINFO_APP).
+        # Se sigue alimentando puntualmente desde dos disparadores: nodo nuevo
+        # detectado (enqueue inmediato) y nodo en movimiento (_maybe_prioritize_traceroute).
         if self._traceroute_queue and (now - self._traceroute_last_send >= SEND_INTERVAL):
             target = self._traceroute_queue.popleft()
             self._send_traceroute(target)

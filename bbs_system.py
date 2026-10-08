@@ -60,6 +60,7 @@ SHORT_TERM_INTERVAL_SECONDS = 5 * 60  # cada 5 minutos
 SMN_SECRET_COMMAND = "SMN NOW 9XQ7"
 SMN_ALERTS_CHANNEL_INDEX = 1   # canal primario SMN_Alertas
 SMN_ALERTS_CHANNEL_INDEX_2 = 2  # canal secundario SMN_Alertas (sin clave)
+SMNALERT_CHANNEL_REPLY_COOLDOWN = 600  # seg. entre respuestas automáticas en el canal (protege airtime)
 WEATHER_SCRAPER_INTERVAL_SECONDS = 10 * 60  # 10 minutos para actualizar alertas
 FIRMS_POLL_INTERVAL_SECONDS = 10 * 60
 FIRMS_DELIVERY_INTERVAL_SECONDS = 60
@@ -101,10 +102,15 @@ class BBSSystem:
         self.menu_modules = self.load_menu_modules()
         self.interface = Interface()
         self.interface.handle_message = self.handle_message
+        # Desactivado a pedido (2026-09-28): no responder en el canal SMNAlert
+        # por ahora. La lógica de handle_channel_message queda intacta; para
+        # reactivar, descomentar la línea de abajo.
+        # self.interface.on_channel_message = self.handle_channel_message
         self._last_smn_public_broadcast = 0
         self._last_smn_broadcast_content = None  # contenido del último broadcast emitido
         self._last_smn_report_attempt = 0  # último intento del resumen diario (para reintentos)
         self._smn_report_state = (None, None)  # (slot_key, contenido publicado) del resumen diario
+        self._smnalert_channel_reply_last_ts = 0  # cooldown global de respuestas en el canal
 
         store_forward.init_db()
         bbs_users.init_db()
@@ -1042,50 +1048,66 @@ class BBSSystem:
         except Exception:
             logger.exception("Error enviando invitación SMNAlert")
 
+    def handle_channel_message(self, sender: str, text: str, channel_idx: int):
+        """Alguien escribió en un canal (no DM). Solo reacciona en SMNAlert,
+        respondiendo si hay alertas vigentes para el sudoeste bonaerense.
+        Cooldown global (no por persona) para no gastar airtime de más."""
+        if channel_idx != SMN_ALERTS_CHANNEL_INDEX:
+            return None
+
+        now = time.time()
+        if (now - self._smnalert_channel_reply_last_ts) < SMNALERT_CHANNEL_REPLY_COOLDOWN:
+            return None
+
+        try:
+            has_alerts = bool(weather_alert_service.get_sudoeste_ba_alerts())
+        except Exception:
+            logger.exception("handle_channel_message: error chequeando alertas vigentes")
+            return None
+
+        self._smnalert_channel_reply_last_ts = now
+
+        if not has_alerts:
+            return "No hay alertas vigentes."
+        return (
+            "Hay alertas vigentes. Estos se reportan diariamente a las 11 y 18hs de cada día "
+            "aproximadamente. Las alertas de corto/muy corto plazo se comunican inmediatamente "
+            "al ser reportadas."
+        )
+
     def build_short_term_alert_messages(self, alert: dict) -> list:
-        """Devuelve una lista de mensajes, uno por partido afectado (header solo en el primero)."""
+        """Un solo mensaje corto con lo esencial. Antes armaba un mensaje
+        completo POR PARTIDO, cada uno repitiendo el párrafo crudo del SMN
+        (que ya reitera fenómeno/fecha/partidos en forma de oración) — con
+        varios partidos afectados terminaba en una pared de ~15 chunks de
+        LoRa repitiendo el mismo texto. Se descarta ese párrafo por completo:
+        es 100% redundante con phenomenon/when/affected_partidos, que ya
+        tenemos estructurados."""
         try:
             dt = datetime.fromisoformat(alert["dc_date"])
             when = dt.strftime("%d/%m %H:%M")
         except Exception:
             when = alert.get("dc_date", "")
 
-        description = alert.get("description_clean", "").strip()
-        phenomenon  = alert.get("phenomenon", "ALERTA METEOROLOGICA").upper()
-        affected    = alert.get("affected_partidos", [])
+        phenomenon = alert.get("phenomenon", "ALERTA METEOROLOGICA").upper()
+        affected   = alert.get("affected_partidos", [])
 
         priority_affected = [p for p in PARTIDO_ORDER if p in affected]
         rest_affected     = sorted(p for p in affected if p not in PARTIDO_ORDER)
         ordered_affected  = priority_affected + rest_affected
 
-        messages = []
-        for i, partido in enumerate(ordered_affected):
-            lines = []
-            if i == 0:
-                lines += [
-                    "🚨🔴🚨🔴🚨🔴🚨🔴🚨",
-                    "⚠️ AVISO METEOROLÓGICO ⚠️",
-                    "⚠️  MUY CORTO PLAZO  ⚠️",
-                    "🚨🔴🚨🔴🚨🔴🚨🔴🚨",
-                ]
-            lines += [
-                f"📍 {partido.upper()}",
-                f"⛈ {phenomenon}",
-                f"🕐 Emitido: {when}",
-            ]
-            if description:
-                lines.append(f"▶ {description}")
-            lines += [
-                "─────────────────────",
-                "⛔ NO ES UN REPORTE DIARIO.",
-                "Tomá precauciones AHORA.",
-                "Situación de riesgo inminente.",
-                "─────────────────────",
-                "Fuente: SMN Argentina",
-            ]
-            messages.append("\n".join(lines))
+        icon = self.alert_icon(phenomenon)
+        partidos_txt = ", ".join(ordered_affected)
 
-        return messages
+        lines = [
+            "⚠️ AVISO SMN · MUY CORTO PLAZO ⚠️",
+            f"{icon} {phenomenon}",
+            f"🕐 {when}",
+            f"📍 {partidos_txt}",
+            "⛔ Tomá precauciones AHORA. No es el reporte diario.",
+            "Fuente: SMN",
+        ]
+        return ["\n".join(lines)]
 
     def check_short_term_alerts(self):
         """Consulta el feed de avisos a muy corto plazo y emite al canal si hay match con el SW."""
