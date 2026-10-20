@@ -79,6 +79,14 @@ _SENTINEL_LOG_SLOTS = [
     ((2026, 8, 21, 14),
      "⚠️ Corrección SMNAlert: la clave que mandamos hoy a las 13hs tenía un carácter de menos. La clave correcta es:\n"
      "s5kHDQ1KmyL8e21jV/tZh5XA6MScZxOuC1WrgwysavY="),
+    ((2026, 10, 20, 20),
+     "📟 SENTINEL BBS: el Escape Room 🚪 y el ZORK 🗺 ya están arreglados y 100% en castellano. "
+     "Para jugar: mandale un mensaje directo al nodo Sentinel BBS, vas a ver un menú — elegí 🎮 Juegos "
+     "y después el que quieras. Disponible cuando quieras, no hace falta esperar nada."),
+    ((2026, 10, 23, 20),
+     "¡Buen viernes, mesh del sudoeste y aledaños...! 📟 Sentinel BBS tiene el Escape Room 🚪 y el ZORK 🗺 "
+     "listos, arreglados y en castellano. Mandale un DM al nodo cuando quieras, entrá a 🎮 Juegos y elegí "
+     "tu aventura. ¡Buen finde!"),
 ]
 
 # Invitación al canal SMNAlert — una vez por día en las fechas indicadas, al
@@ -481,6 +489,7 @@ class BBSSystem:
         "Address List":     "📋",
         "Tic Tac Toe":      "⭕",
         "Escape Room":      "🚪",
+        "Escape Room Criollo": "🏚",
         "Hot Cold":         "🌡",
         "Zork":             "🗺",
     }

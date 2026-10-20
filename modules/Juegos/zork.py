@@ -1,7 +1,7 @@
 menu_name = "ZORK"
 
 def display_menu():
-    return "Welcome to Zork!\n1. Start Game\n2. ↩ Volver"
+    return "¡Bienvenido a Zork!\n1. Empezar\n2. ↩ Volver"
 
 def init_game():
     return {
@@ -22,15 +22,15 @@ def process_command(user_id, command, bbs_system):
         elif command.strip() == "2" or command.strip().lower() == "cd ..":
             return "__back__"
         else:
-            return "Invalid choice. Enter '1' para jugar o '2' para volver."
+            return "Opción inválida. Ingresá '1' para jugar o '2' para volver."
 
     game = user_state["zork_game"]
 
     if command.strip().lower() == "cd ..":
         return "__back__"
 
-    if command.strip().lower() == "help":
-        return "Available commands depend on your location. Try looking around or moving in a direction.\nExamples: 'look', 'go east', 'open mailbox'."
+    if command.strip().lower() == "ayuda":
+        return "Los comandos disponibles dependen de dónde estés. Probá mirar alrededor o moverte en una dirección.\nEjemplos: 'mirar', 'ir al este', 'abrir buzon'."
 
     if game["location"] == "field":
         return handle_field(game, command)
@@ -41,74 +41,74 @@ def process_command(user_id, command, bbs_system):
     elif game["location"] == "cave":
         return handle_cave(game, command)
     else:
-        return "Unknown game state."
+        return "Estado de juego desconocido."
 
 def handle_field(game, command=None):
-    if command is None or command in ["look", "look around"]:
-        return ("You are standing in an open field west of a white house, with a boarded front door.\n"
-                "(A secret path leads southwest into the forest.)\n"
-                "There is a Small Mailbox.\nWhat do you do?")
-    elif command == "take mailbox":
-        return "It is securely anchored."
-    elif command in ["open mailbox", "look in mailbox"]:
-        return "Opening the small mailbox reveals a leaflet."
-    elif command == "go east":
-        return "The door is boarded and you cannot remove the boards."
-    elif command == "open door":
-        return "The door cannot be opened."
-    elif command == "take boards":
-        return "The boards are securely fastened."
-    elif command in ["look at house", "examine house"]:
-        return "The house is a beautiful colonial house which is painted white. It is clear that the owners must have been extremely wealthy."
-    elif command in ["go southwest", "go to secret path"]:
+    if command is None or command in ["mirar", "mirar alrededor"]:
+        return ("Estás parado en un campo abierto al oeste de una casa blanca, con la puerta de entrada tapiada.\n"
+                "(Un sendero secreto lleva al sudoeste, hacia el bosque.)\n"
+                "Hay un Buzón Pequeño.\n¿Qué hacés?")
+    elif command == "tomar buzon":
+        return "Está firmemente anclado."
+    elif command in ["abrir buzon", "mirar en buzon"]:
+        return "Al abrir el buzón pequeño encontrás un folleto."
+    elif command == "ir al este":
+        return "La puerta está tapiada y no podés sacar las tablas."
+    elif command == "abrir puerta":
+        return "La puerta no se puede abrir."
+    elif command == "tomar tablas":
+        return "Las tablas están firmemente aseguradas."
+    elif command in ["mirar casa", "examinar casa"]:
+        return "La casa es una hermosa casa colonial pintada de blanco. Está claro que sus dueños deben haber sido extremadamente ricos."
+    elif command in ["ir al sudoeste", "ir al sendero secreto"]:
         game["location"] = "forest"
         return handle_forest(game)
-    elif command == "read leaflet":
-        return "Welcome to the Unofficial Python Version of Zork. Your mission is to find a Jade Statue."
+    elif command == "leer folleto":
+        return "Bienvenido a la versión no oficial en Python de Zork. Tu misión es encontrar una Estatua de Jade."
     else:
-        return "Invalid command. Try 'look', 'go southwest', or 'open mailbox'."
+        return "Comando inválido. Probá 'mirar', 'ir al sudoeste', o 'abrir buzon'."
 
 def handle_forest(game, command=None):
-    if command is None or command in ["look", "look around"]:
-        return "This is a forest, with trees in all directions. To the east, there appears to be sunlight.\nWhat do you do?"
-    elif command == "go west":
-        return "You would need a machete to go further west."
-    elif command == "go north":
-        return "The forest becomes impenetrable to the North."
-    elif command == "go south":
-        return "Storm-tossed trees block your way."
-    elif command == "go east":
+    if command is None or command in ["mirar", "mirar alrededor"]:
+        return "Esto es un bosque, con árboles en todas direcciones. Hacia el este, parece haber luz solar.\n¿Qué hacés?"
+    elif command == "ir al oeste":
+        return "Necesitarías un machete para ir más al oeste."
+    elif command == "ir al norte":
+        return "El bosque se vuelve impenetrable hacia el norte."
+    elif command == "ir al sur":
+        return "Árboles azotados por la tormenta bloquean tu camino."
+    elif command == "ir al este":
         game["location"] = "clearing"
         return handle_clearing(game)
     else:
-        return "Invalid command. Try 'look' or 'go east'."
+        return "Comando inválido. Probá 'mirar' o 'ir al este'."
 
 def handle_clearing(game, command=None):
-    if command is None or command in ["look", "look around"]:
-        return ("You are in a clearing, with a forest surrounding you on all sides. A path leads south.\n"
-                "There is an open grating, descending into darkness.\nWhat do you do?")
-    elif command == "go south":
-        return "You see a large ogre and turn around."
-    elif command in ["descend grating", "go down"]:
+    if command is None or command in ["mirar", "mirar alrededor"]:
+        return ("Estás en un claro, rodeado de bosque por todos lados. Un sendero lleva al sur.\n"
+                "Hay una reja abierta, que desciende hacia la oscuridad.\n¿Qué hacés?")
+    elif command == "ir al sur":
+        return "Ves un ogro enorme y das la vuelta."
+    elif command in ["bajar por la reja", "ir hacia abajo"]:
         game["location"] = "cave"
         return handle_cave(game)
     else:
-        return "Invalid command. Try 'look' or 'descend grating'."
+        return "Comando inválido. Probá 'mirar' o 'bajar por la reja'."
 
 def handle_cave(game, command=None):
-    if command is None or command in ["look", "look around"]:
-        return "You are in a tiny cave with a dark, forbidding staircase leading down.\nThere is a skeleton of a human male in one corner.\nWhat do you do?"
-    elif command in ["descend staircase", "go down"]:
-        return ("You have entered a mud-floored room.\n"
-                "Lying half buried in the mud is an old trunk, bulging with jewels.\n"
-                "You have found the Jade Statue and have completed your quest!")
-    elif command == "take skeleton":
-        return "Why would you do that? Are you some sort of sicko?"
-    elif command == "smash skeleton":
-        return "Sick person. Have some respect mate."
-    elif command == "light up room":
-        return "You would need a torch or lamp to do that."
-    elif command == "break skeleton":
-        return "I have two questions: Why and With What?"
+    if command is None or command in ["mirar", "mirar alrededor"]:
+        return "Estás en una cueva pequeña con una escalera oscura y amenazante que baja.\nHay un esqueleto de un hombre en un rincón.\n¿Qué hacés?"
+    elif command in ["bajar la escalera", "ir hacia abajo"]:
+        return ("Entrás a una habitación con piso de barro.\n"
+                "Medio enterrado en el barro hay un baúl viejo, repleto de joyas.\n"
+                "¡Encontraste la Estatua de Jade y completaste tu misión!")
+    elif command == "tomar esqueleto":
+        return "¿Por qué harías eso? ¿Sos alguna especie de enfermo?"
+    elif command == "romper esqueleto":
+        return "Qué persona enferma. Tené un poco de respeto, viejo."
+    elif command == "iluminar habitacion":
+        return "Necesitarías una antorcha o una lámpara para hacer eso."
+    elif command == "quebrar esqueleto":
+        return "Tengo dos preguntas: ¿Por qué? ¿Y con qué?"
     else:
-        return "Invalid command. Try 'look' or 'descend staircase'."
+        return "Comando inválido. Probá 'mirar' o 'bajar la escalera'."
