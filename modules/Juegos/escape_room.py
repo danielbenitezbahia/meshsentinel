@@ -1,4 +1,4 @@
-menu_name = "Escape Room"  # Required for module loading
+menu_name = "Escape Room"  # Necesario para que el módulo cargue
 
 def display_menu():
     return (
@@ -10,10 +10,10 @@ def display_menu():
     )
 
 def init_game():
-    """Initialize the game state."""
+    """Inicializa el estado del juego."""
     return {
-        "current_room": "start",  # Start room
-        "inventory": [],  # Items collected by the player
+        "current_room": "start",  # Habitación inicial
+        "inventory": [],  # Objetos recolectados por el jugador
         "rooms": {
             "start": {
                 "description": (
@@ -22,8 +22,9 @@ def init_game():
                     "y un cuadro colgado en la pared."
                 ),
                 "objects": {
-                    "table": "Una vieja mesa de madera con un cajón.",
-                    "painting": "Un cuadro de un paisaje; parece estar ligeramente torcido."
+                    "mesa": "Una vieja mesa de madera con un cajón.",
+                    "cajon": "Un cajón de la mesa.",
+                    "cuadro": "Un cuadro de un paisaje; parece estar ligeramente torcido."
                 },
                 "items": {},
                 "exits": {"norte": "locked_door", "este": "hidden_room"}
@@ -31,7 +32,7 @@ def init_game():
             "locked_door": {
                 "description": "Una puerta cerrada bloquea tu camino. Ves una cerradura.",
                 "objects": {
-                    "door": "La puerta está cerrada. Hay una cerradura visible."
+                    "puerta": "La puerta está cerrada. Hay una cerradura visible."
                 },
                 "items": {},
                 "exits": {"sur": "start"}
@@ -42,26 +43,25 @@ def init_game():
                     "Hay un cofre en el centro y una estantería contra la pared."
                 ),
                 "objects": {
-                    "chest": "Un cofre antiguo con una cerradura de combinación.",
-                    "bookshelf": "Una estantería polvorienta llena de libros variados."
+                    "cofre": "Un cofre antiguo con una cerradura de combinación.",
+                    "estanteria": "Una estantería polvorienta llena de libros variados."
                 },
                 "items": {},
                 "exits": {"oeste": "start"}
             }
         },
-        "door_unlocked": False,  # Track if the door is unlocked
-        "chest_unlocked": False  # Track if the chest is unlocked
+        "door_unlocked": False,   # Si la puerta ya fue desbloqueada
+        "chest_unlocked": False,  # Si el cofre ya fue desbloqueado
+        "escaped": False          # Si ya se mostró el mensaje de escape
     }
 
 def process_command(user_id, command, bbs_system):
-    """Handle commands for the Escape Room game."""
-    # Check if the user exists in the system, and initialize user state if not
+    """Maneja los comandos del juego Escape Room."""
     if user_id not in bbs_system.users:
         bbs_system.users[user_id] = {}
 
     user_state = bbs_system.users[user_id]
 
-    # Initialize the game if not already done
     if "escape_room" not in user_state:
         user_state["escape_room"] = init_game()
 
@@ -70,114 +70,128 @@ def process_command(user_id, command, bbs_system):
     if command.strip() == "0" or command.strip().lower() == "cd ..":
         return "__back__"
 
-    # Normalize command input and parse the action and target
-    parts = command.strip().lower().replace("go ", "").replace("move ", "").split(" ", 1)
+    # Normaliza el comando: saca el prefijo opcional "ir " y separa en
+    # acción + objetivo.
+    normalized = command.strip().lower()
+    if normalized.startswith("ir "):
+        normalized = normalized[3:]
+    parts = normalized.split(" ", 1)
     action = parts[0]
-    target = parts[1] if len(parts) > 1 else None
+    target = parts[1].strip() if len(parts) > 1 else None
 
     current_room = game["current_room"]
     room_data = game["rooms"][current_room]
 
-    # Handle directional movement
+    # Movimiento
     if action in ["norte", "sur", "este", "oeste"]:
         return move_player(action, game)
 
-    # Handle examining the room or objects
-    if action in ["look", "examinar"] and (target == "room" or not target):
-        description = room_data["description"]
-        exits = ", ".join(room_data.get("exits", {}).keys()) or "ninguna"
-        return f"{description}\nSalidas: {exits}."
-
-    # Handle examining specific objects
-    if action == "examinar" and target:
+    # Examinar la habitación (sin objeto) o un objeto puntual
+    if action == "examinar":
+        if not target:
+            description = room_data["description"]
+            exits = ", ".join(room_data.get("exits", {}).keys()) or "ninguna"
+            return f"{description}\nSalidas: {exits}."
         return examine_object(target, room_data, game)
 
-    # Handle picking up items
-    if action == "pick" and target and target.startswith("up"):
-        item = target[3:].strip()
-        return pick_up_item(item, room_data, game)
+    # Recoger objetos
+    if action == "recoger" and target:
+        return pick_up_item(target, room_data, game)
 
-    # Handle using items
-    if action == "use" and target:
+    # Usar objetos
+    if action == "usar" and target:
         return use_item(target, game)
 
-    # Handle displaying the inventory
-    if action == "inventory":
+    # Inventario
+    if action == "inventario":
         inv = ", ".join(game["inventory"]) if game["inventory"] else "vacío"
         return f"Inventario: {inv}"
 
-    # Display help or handle unrecognized commands
-    if action == "help" or action not in ["norte", "sur", "este", "oeste", "examinar", "pick", "use", "inventory"]:
-        exits = ", ".join(room_data.get("exits", {}).keys()) or "ninguna"
-        objects = ", ".join(room_data.get("objects", {}).keys()) or "ninguno"
-        return (
-            "Comando inválido. Probá con:\n"
-            "- Movimiento: norte, sur, este, oeste\n"
-            f"- Examinar: room, {objects}\n"
-            "- Recoger: pick up <item>\n"
-            "- Usar: use <item>\n"
-            f"Salidas disponibles: {exits}."
-        )
-
-    # Fallback for any unrecognized commands
-    return "Comando inválido. Escribí 'help' para ver la lista de comandos."
+    # Ayuda o comando no reconocido
+    exits = ", ".join(room_data.get("exits", {}).keys()) or "ninguna"
+    objects = ", ".join(room_data.get("objects", {}).keys()) or "ninguno"
+    return (
+        "Comando inválido. Probá con:\n"
+        "- Movimiento: norte, sur, este, oeste\n"
+        f"- Examinar: examinar <objeto> (sin objeto para mirar la habitación). Objetos acá: {objects}\n"
+        "- Recoger: recoger <objeto>\n"
+        "- Usar: usar <objeto>\n"
+        f"Salidas disponibles: {exits}."
+    )
 
 def move_player(direction, game):
-    """Handle player movement."""
-    # Determine if the player can move in the given direction
+    """Maneja el movimiento del jugador."""
     current_room = game["current_room"]
     exits = game["rooms"][current_room].get("exits", {})
-    if direction in exits:
-        # Check if the door is locked before moving
-        if exits[direction] == "locked_door" and not game["door_unlocked"]:
-            return "The door is locked. You need to unlock it first."
-        game["current_room"] = exits[direction]
-        return f"You moved {direction}.\n\n{game['rooms'][game['current_room']]['description']}"
-    else:
-        return "You can't go that way."
+    if direction not in exits:
+        return "No podés ir hacia ahí."
+
+    destination = exits[direction]
+    if destination == "locked_door" and not game["door_unlocked"]:
+        return "La puerta está cerrada con llave. Necesitás desbloquearla primero."
+
+    game["current_room"] = destination
+
+    # Entrar por primera vez a la puerta ya desbloqueada es, en sí, el escape.
+    if destination == "locked_door" and game["door_unlocked"] and not game["escaped"]:
+        game["escaped"] = True
+        return (
+            "Abrís la puerta y salís caminando... ¡Escapaste de la habitación!\n"
+            "🎉 ¡Felicitaciones, completaste el Escape Room! 🎉"
+        )
+
+    return f"Te moviste hacia el {direction}.\n\n{game['rooms'][destination]['description']}"
 
 def examine_object(target, room_data, game):
-    """Handle examining objects."""
-    # Check if the target object is in the current room
-    if target in room_data.get("objects", {}):
-        if target == "table":
-            return "An old wooden table with a drawer. Maybe you should open the drawer."
-        elif target == "drawer":
-            if "key" not in game["inventory"]:
-                room_data["items"]["key"] = "A rusty key inside the drawer."
-                return "You opened the drawer and found a rusty key."
-            else:
-                return "The drawer is empty."
-        elif target == "painting":
-            return "A painting of a landscape; it seems slightly askew. Perhaps you should adjust it."
-        elif target == "chest":
-            if not game["chest_unlocked"]:
-                return "An old chest with a combination lock. Maybe there's a clue nearby."
-            else:
-                return "The chest is open. Inside, you see a shiny gem."
-        elif target == "bookshelf":
-            return "A dusty bookshelf filled with various books. One book seems out of place."
+    """Maneja el examen de objetos."""
+    if target not in room_data.get("objects", {}):
+        return "No ves eso acá."
+
+    if target == "mesa":
+        return "Una vieja mesa de madera con un cajón. Tal vez deberías abrir el cajón."
+    elif target == "cajon":
+        if "llave" not in game["inventory"]:
+            room_data["items"]["llave"] = "Una llave oxidada dentro del cajón."
+            return "Abrís el cajón y encontrás una llave oxidada."
         else:
-            return room_data["objects"][target]
+            return "El cajón está vacío."
+    elif target == "cuadro":
+        return "Un cuadro de un paisaje; parece estar ligeramente torcido. Tal vez deberías acomodarlo."
+    elif target == "cofre":
+        if not game["chest_unlocked"]:
+            return "Un cofre antiguo con una cerradura de combinación. Quizás haya alguna pista cerca."
+        else:
+            return "El cofre está abierto. Adentro ves una gema brillante."
+    elif target == "estanteria":
+        if "nota" not in game["inventory"]:
+            room_data["items"]["nota"] = "Una nota con una combinación garabateada."
+            return "Un libro parece fuera de lugar. Lo sacás y encontrás una nota con una combinación."
+        else:
+            return "Una estantería polvorienta llena de libros variados."
+    elif target == "puerta":
+        estado = "desbloqueada" if game["door_unlocked"] else "cerrada con llave"
+        return f"La puerta está {estado}. Hay una cerradura visible."
     else:
-        return "You don't see that here."
+        return room_data["objects"][target]
 
 def pick_up_item(item, room_data, game):
-    """Handle picking up items."""
-    # Check if the item is available in the room
+    """Maneja recoger objetos."""
     items = room_data.get("items", {})
     if item in items:
         game["inventory"].append(item)
         del items[item]
-        return f"You picked up {item}."
+        return f"Recogiste: {item}."
     else:
-        return "You can't pick that up."
+        return "No podés recoger eso."
 
 def use_item(target, game):
-    """Handle using items."""
-    # Check if the user can use the item in the current context
-    if "key" in target and "key" in game["inventory"] and game["current_room"] == "locked_door":
+    """Maneja usar objetos."""
+    if "llave" in target and "llave" in game["inventory"] and game["current_room"] == "start":
         game["door_unlocked"] = True
-        return "You used the key to unlock the door! You can now go norte."
-    else:
-        return "You can't use that here."
+        return "Usaste la llave para desbloquear la puerta. Ahora podés ir al norte."
+    if "nota" in target and "nota" in game["inventory"] and game["current_room"] == "hidden_room":
+        if game["chest_unlocked"]:
+            return "El cofre ya está abierto."
+        game["chest_unlocked"] = True
+        return "Usaste la nota para marcar la combinación correcta. ¡El cofre se abre! Adentro hay una gema brillante."
+    return "No podés usar eso acá."
