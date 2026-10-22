@@ -59,7 +59,7 @@ class ERCTestBase(unittest.TestCase):
     def resolver_caja(self):
         """Desde la entrada: va al deposito y abre la caja fuerte."""
         self.send("norte")  # entrada -> deposito
-        return self.send("usar 0315")
+        return self.send("usar 1503")
 
     def resolver_ropero(self):
         """Requiere haber resuelto la caja antes (para tener la llave). Deja al jugador en el dormitorio."""
@@ -118,6 +118,18 @@ class TestMovementAndMap(ERCTestBase):
     def test_invalid_direction_from_entrada(self):
         self.assertEqual(self.send("arriba"), "No podés ir hacia ahí.")
 
+    def test_moverse_muestra_salidas_de_la_nueva_sala(self):
+        # Reporte real de playtesting: al moverse se describia la sala nueva
+        # pero no se mostraban sus salidas (solo "examinar" las mostraba).
+        out = self.send("este")  # entrada -> cocina
+        self.assertIn("Salidas: oeste, norte.", out)
+
+    def test_moverse_muestra_salidas_en_sala_con_una_sola_salida(self):
+        self.send("norte")   # deposito
+        self.send("este")    # dormitorio
+        out = self.send("abajo")  # sotano, unica salida: arriba
+        self.assertIn("Salidas: arriba.", out)
+
     def test_full_map_is_connected(self):
         # entrada -> cocina -> sala_equipos -> cocina -> entrada -> deposito ->
         # dormitorio -> sotano -> dormitorio -> deposito -> entrada
@@ -154,6 +166,47 @@ class TestMovementAndMap(ERCTestBase):
         self.assertFalse(self.game()["terminado"])
 
 
+class TestMapaComando(ERCTestBase):
+    # Pedido explicito: mapa compacto de SOLO la sala actual y sus salidas
+    # inmediatas (no todo lo descubierto), por el espacio limitado en ancho
+    # (celular) y alto (tamaño de mensaje del mesh).
+    def test_mapa_muestra_posicion_actual(self):
+        out = self.send("mapa")
+        self.assertIn("Estás en la entrada", out)
+
+    def test_mapa_en_entrada_muestra_salidas_inmediatas(self):
+        out = self.send("mapa")
+        self.assertIn("Norte: el depósito", out)
+        self.assertIn("Este: la cocina", out)
+        self.assertIn("afuera", out)
+
+    def test_mapa_no_muestra_salas_no_adyacentes(self):
+        out = self.send("mapa")
+        self.assertNotIn("sótano", out)
+        self.assertNotIn("dormitorio", out)
+
+    def test_mapa_en_sala_con_una_sola_salida(self):
+        self.send("norte")  # deposito
+        self.send("este")   # dormitorio
+        self.send("abajo")  # sotano
+        out = self.send("mapa")
+        self.assertIn("Estás en el sótano", out)
+        self.assertIn("Arriba: el dormitorio", out)
+
+    def test_mapa_cambia_al_moverse(self):
+        self.send("este")  # entrada -> cocina
+        out = self.send("mapa")
+        self.assertIn("Estás en la cocina", out)
+        self.assertIn("Oeste: la entrada", out)
+        self.assertIn("Norte: la sala de equipos", out)
+
+    def test_mapa_no_depende_de_haber_examinado_antes(self):
+        # A diferencia del viejo mapa acumulativo, este no necesita ningun
+        # estado de "descubierto" -- solo mira las salidas de la sala actual.
+        out = self.send("mapa")
+        self.assertNotIn("Comando inválido", out)
+
+
 class TestLinternaPuzzle(ERCTestBase):
     def test_examine_perchero_reveals_linterna(self):
         out = self.send("examinar perchero")
@@ -186,17 +239,83 @@ class TestLinternaPuzzle(ERCTestBase):
         out = self.send("arreglar linterna")
         self.assertIn("ya está arreglada", out)
 
+    def test_usar_linterna_es_alias_de_arreglar(self):
+        # Reporte real de playtesting: "usar linterna" es el comando mas
+        # intuitivo (consistente con el resto del juego) y antes no andaba.
+        self.get_linterna()
+        self.get_pila()
+        out = self.send("usar linterna")
+        self.assertIn("Prende con una luz amarilla", out)
+        self.assertTrue(self.game()["linterna_arreglada"])
+
+    def test_usar_pila_es_alias_de_arreglar(self):
+        self.get_linterna()
+        self.get_pila()
+        out = self.send("usar pila")
+        self.assertIn("Prende con una luz amarilla", out)
+        self.assertTrue(self.game()["linterna_arreglada"])
+
+    def test_bateria_es_sinonimo_de_pila_para_recoger(self):
+        self.send("este")  # entrada -> cocina, donde esta la alacena
+        self.send("examinar alacena")
+        out = self.send("recoger bateria")
+        self.assertEqual(out, "Recogiste: pila.")
+        self.assertIn("pila", self.game()["inventory"])
+
+    def test_bateria_es_sinonimo_de_pila_para_usar(self):
+        self.get_linterna()
+        self.send("este")  # entrada -> cocina
+        self.send("examinar alacena")
+        self.send("recoger bateria")
+        self.send("oeste")  # cocina -> entrada (arreglar linterna no exige sala, pero por las dudas)
+        out = self.send("usar bateria")
+        self.assertIn("Prende con una luz amarilla", out)
+        self.assertTrue(self.game()["linterna_arreglada"])
+
 
 class TestCajaFuertePuzzle(ERCTestBase):
     def test_examine_caja_antes(self):
         self.send("norte")
         out = self.send("examinar caja")
         self.assertIn("disco de combinación", out)
+        self.assertIn("usar", out.lower())
 
     def test_codigo_en_habitacion_incorrecta_falla(self):
-        out = self.send("usar 0315")  # sigue en entrada
+        out = self.send("usar 1503")  # sigue en entrada
         self.assertEqual(out, "No podés usar eso acá.")
         self.assertFalse(self.game()["caja_abierta"])
+
+    def test_usar_caja_sin_codigo_da_pista(self):
+        # Reporte real de playtesting: "usar caja" (el primer intento mas
+        # obvio) no daba ninguna pista de la sintaxis real ("usar <codigo>").
+        self.send("norte")  # deposito
+        out = self.send("usar caja")
+        self.assertIn("usar", out.lower())
+        self.assertIn("1234", out)
+        self.assertFalse(self.game()["caja_abierta"])
+
+    def test_usar_caja_cuando_ya_esta_abierta(self):
+        self.resolver_caja()
+        out = self.send("usar caja")
+        self.assertEqual(out, "La caja fuerte ya está abierta.")
+
+    def test_codigo_incorrecto_da_feedback_claro(self):
+        self.send("norte")  # deposito
+        out = self.send("usar 9999")
+        self.assertIn("no pasa nada", out.lower())
+        self.assertFalse(self.game()["caja_abierta"])
+
+    def test_codigo_incorrecto_dos_veces_sigue_cerrada(self):
+        self.send("norte")  # deposito
+        self.send("usar 1111")
+        out = self.send("usar 1503")
+        self.assertIn("clic", out.lower())
+        self.assertTrue(self.game()["caja_abierta"])
+
+    def test_usar_objeto_no_relacionado_en_deposito_sigue_invalido(self):
+        self.send("norte")  # deposito
+        out = self.send("usar anemometro")
+        self.assertEqual(out, "No podés usar eso acá.")
 
     def test_abrir_caja_con_codigo(self):
         out = self.resolver_caja()
@@ -207,7 +326,7 @@ class TestCajaFuertePuzzle(ERCTestBase):
 
     def test_abrir_caja_dos_veces(self):
         self.resolver_caja()
-        out = self.send("usar 0315")
+        out = self.send("usar 1503")
         self.assertEqual(out, "La caja fuerte ya está abierta.")
 
     def test_examine_caja_despues(self):
@@ -423,6 +542,29 @@ class TestTorreYFinal(ERCTestBase):
         self.assertIn("cortar transmision", out)
         self.assertIn("dejar transmision", out)
 
+    def test_examinar_palancas_es_alias_de_control(self):
+        # Reporte real de playtesting: la descripcion de la sala dice
+        # "palancas", pero ese objeto se llama "control" -- debe reconocerse
+        # con la palabra que el jugador realmente ve en pantalla.
+        self.goto_torre()
+        out = self.send("examinar palancas")
+        self.assertIn("cortar transmision", out)
+        self.assertIn("dejar transmision", out)
+
+    def test_usar_palancas_sin_elegir_da_pista(self):
+        self.goto_torre()
+        out = self.send("usar palancas")
+        self.assertIn("cortar transmision", out)
+        self.assertIn("dejar transmision", out)
+        self.assertIsNone(self.game()["final_decidido"])
+
+    def test_usar_control_sin_elegir_da_pista(self):
+        self.goto_torre()
+        out = self.send("usar control")
+        self.assertIn("cortar transmision", out)
+        self.assertIn("dejar transmision", out)
+        self.assertIsNone(self.game()["final_decidido"])
+
     def test_decidir_cortar(self):
         self.goto_torre()
         out = self.send("cortar transmision")
@@ -486,6 +628,25 @@ class TestTorreYFinal(ERCTestBase):
         self.assertEqual(out, "La puerta ya está abierta. Podés irte cuando quieras.")
 
 
+class TestMirarAliasDeExaminar(ERCTestBase):
+    # El propio texto de ayuda del juego usa la palabra "mirar" para describir
+    # la accion de ver la habitacion, pero antes solo "examinar" (y un "look"
+    # en ingles que quedo colado) estaban reconocidos como comando real.
+    def test_mirar_sin_objeto_muestra_sala(self):
+        out = self.send("mirar")
+        self.assertIn("galería de entrada", out)
+        self.assertIn("Salidas:", out)
+
+    def test_mirar_objeto_es_alias_de_examinar(self):
+        out = self.send("mirar perchero")
+        self.assertIn("linterna", out)
+        self.assertIn("linterna", self.game()["rooms"]["entrada"]["items"])
+
+    def test_look_en_ingles_ya_no_esta_reconocido(self):
+        out = self.send("look")
+        self.assertIn("Comando inválido", out)
+
+
 class TestInventoryAndFallback(ERCTestBase):
     def test_inventario_vacio(self):
         self.assertEqual(self.send("inventario"), "Inventario: vacío")
@@ -534,7 +695,7 @@ class TestFullHappyPathCortar(ERCTestBase):
 
         # Caja fuerte -> llave + pagina1
         self.send("norte")
-        self.send("usar 0315")
+        self.send("usar 1503")
         self.send("recoger llave")
         self.send("recoger pagina1")
 

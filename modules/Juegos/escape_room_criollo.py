@@ -7,7 +7,7 @@ def display_menu():
         "abandonada hace años, que la semana pasada volvió a transmitir sola. "
         "Apenas entrás, la puerta se traba atrás tuyo.\n"
         "Explorá, resolvé lo que pasó con el último operador, y encontrá la forma de salir.\n"
-        "Comandos: norte, sur, este, oeste, arriba, abajo, examinar, recoger, usar.\n"
+        "Comandos: norte, sur, este, oeste, arriba, abajo, examinar, recoger, usar, mapa.\n"
         "0. ↩ Volver"
     )
 
@@ -29,7 +29,8 @@ def init_game():
                         "El cuaderno de guardia está abierto en la última anotación:\n"
                         "\"15/03, 18hs — Presión bajando fuerte, 998 hPa. Viene tormenta. "
                         "Anoto todo como siempre, por si las dudas.\"\n"
-                        "La fecha podría servir como combinación de algo."
+                        "La fecha podría ser la combinación de algo: probá escribirla "
+                        "como 4 números juntos, sin la barra."
                     ),
                     "puerta": "La puerta principal. Está trabada, no cede ni un poco.",
                 },
@@ -153,6 +154,15 @@ def process_command(user_id, command, bbs_system):
     parts = normalized.split(" ", 1)
     action = parts[0]
     target = parts[1].strip() if len(parts) > 1 else None
+    # "batería"/"bateria" es el sinónimo más natural de "pila" (varios
+    # jugadores la van a tipear así); se normaliza acá una sola vez.
+    if target in ["bateria", "batería"]:
+        target = "pila"
+    # La descripción de la torre menciona "palancas", pero el objeto
+    # examinable es "control" -- mismo alias para que se pueda
+    # examinar/usar con la palabra que el jugador realmente ve en pantalla.
+    if target in ["palanca", "palancas"]:
+        target = "control"
 
     current_room = game["current_room"]
     room_data = game["rooms"][current_room]
@@ -161,8 +171,9 @@ def process_command(user_id, command, bbs_system):
     if action in ["norte", "sur", "este", "oeste", "arriba", "abajo", "afuera"]:
         return move_player(action, game)
 
-    # Examinar
-    if action in ["examinar", "look"]:
+    # Examinar (y su sinonimo mas natural "mirar", que el propio texto de
+    # ayuda del juego usa para describir esta accion)
+    if action in ["examinar", "mirar"]:
         if not target:
             description = room_data["description"]
             exits = ", ".join(room_data.get("exits", {}).keys()) or "ninguna"
@@ -202,6 +213,12 @@ def process_command(user_id, command, bbs_system):
         inv = ", ".join(game["inventory"]) if game["inventory"] else "vacío"
         return f"Inventario: {inv}"
 
+    # Mapa (solo la sala actual y sus salidas inmediatas: pensado para
+    # pantallas de celular y el límite de tamaño de los mensajes del mesh,
+    # no acumula todo el mapa descubierto)
+    if action == "mapa":
+        return mostrar_mapa(game)
+
     # Ayuda o comando no reconocido
     exits = ", ".join(room_data.get("exits", {}).keys()) or "ninguna"
     objects = ", ".join(room_data.get("objects", {}).keys()) or "ninguno"
@@ -230,7 +247,12 @@ def move_player(direction, game):
         return abrir_puerta_final(game)
 
     game["current_room"] = destino
-    return f"Te moviste hacia {destino_legible(destino)}.\n\n{game['rooms'][destino]['description']}"
+    destino_data = game["rooms"][destino]
+    destino_exits = ", ".join(destino_data.get("exits", {}).keys()) or "ninguna"
+    return (
+        f"Te moviste hacia {destino_legible(destino)}.\n\n"
+        f"{destino_data['description']}\nSalidas: {destino_exits}."
+    )
 
 def destino_legible(nombre_room):
     nombres = {
@@ -243,6 +265,34 @@ def destino_legible(nombre_room):
         "torre": "la torre",
     }
     return nombres.get(nombre_room, nombre_room)
+
+ORDEN_DIRECCIONES = ["norte", "sur", "este", "oeste", "arriba", "abajo", "afuera"]
+DIRECCION_ICONOS = {
+    "norte": "↑ Norte",
+    "sur": "↓ Sur",
+    "este": "→ Este",
+    "oeste": "← Oeste",
+    "arriba": "↑ Arriba",
+    "abajo": "↓ Abajo",
+}
+
+def mostrar_mapa(game):
+    """Muestra un mapa compacto: la sala actual y sus salidas inmediatas,
+    nada más. Pensado para pantallas de celular y el límite de tamaño de
+    los mensajes del mesh -- no acumula todo el mapa descubierto."""
+    current_room = game["current_room"]
+    exits = game["rooms"][current_room].get("exits", {})
+    lineas = [f"📍 Estás en {destino_legible(current_room)}.", ""]
+    for direccion in ORDEN_DIRECCIONES:
+        if direccion not in exits:
+            continue
+        destino = exits[direccion]
+        if destino == "afuera":
+            lineas.append("🚪 afuera (si ya decidiste algo en la torre)")
+            continue
+        etiqueta = DIRECCION_ICONOS[direccion]
+        lineas.append(f"{etiqueta}: {destino_legible(destino)}")
+    return "\n".join(lineas)
 
 def examine_object(target, room_data, game):
     """Maneja el examen de objetos."""
@@ -264,13 +314,17 @@ def examine_object(target, room_data, game):
     if target == "alacena":
         if "pila" not in game["inventory"]:
             room_data["items"]["pila"] = "Una pila suelta, todavía con carga."
-            return "Revisás la alacena: hay una pila suelta, todavía con carga."
+            return "Revisás la alacena: hay una pila suelta, todavía con carga. Si la agarrás y tenés la linterna, probá 'usar linterna'."
         return "La alacena está vacía, ya agarraste la pila."
 
     if target == "caja":
         if game["caja_abierta"]:
             return "La caja fuerte está abierta."
-        return "Una caja fuerte chica, con un disco de combinación de 4 números."
+        return (
+            "Una caja fuerte chica, con un disco de combinación de 4 números. "
+            "Para probar un código, escribí 'usar' seguido de los 4 números, "
+            "por ejemplo: usar 1234."
+        )
 
     if target == "ropero":
         if game["ropero_abierto"]:
@@ -311,17 +365,39 @@ def pick_up_item(item, room_data, game):
         return "No podés recoger eso."
 
 def use_item(target, game):
-    """Maneja usar objetos/códigos. Cubre: código de la caja fuerte, llave del ropero."""
+    """Maneja usar objetos/códigos. Cubre: código de la caja fuerte, llave del ropero,
+    y linterna/pila como alias de 'arreglar linterna' (el verbo 'usar' es el más
+    intuitivo, consistente con el resto del juego)."""
     current_room = game["current_room"]
 
-    if target == "0315" and current_room == "deposito":
-        if game["caja_abierta"]:
-            return "La caja fuerte ya está abierta."
-        game["caja_abierta"] = True
-        room_data = game["rooms"]["deposito"]
-        room_data["items"]["llave"] = "Una llave chica."
-        room_data["items"]["pagina1"] = "Una página de diario."
-        return "Marcás 0315 en el disco... ¡clic! La caja fuerte se abre. Adentro hay una llave chica y una página de diario."
+    if target in ["linterna", "pila"]:
+        return arreglar_linterna(game)
+
+    if target == "control" and current_room == "torre":
+        return (
+            "El control tiene dos palancas: una corta la transmisión, la otra "
+            "la deja seguir. Escribí 'cortar transmision' o 'dejar transmision' "
+            "para elegir."
+        )
+
+    if current_room == "deposito":
+        if target == "caja":
+            if game["caja_abierta"]:
+                return "La caja fuerte ya está abierta."
+            return (
+                "La caja fuerte tiene un disco de combinación de 4 números. "
+                "Escribí 'usar' seguido del código, por ejemplo: usar 1234."
+            )
+        if target.isdigit() and len(target) == 4:
+            if game["caja_abierta"]:
+                return "La caja fuerte ya está abierta."
+            if target == "1503":
+                game["caja_abierta"] = True
+                room_data = game["rooms"]["deposito"]
+                room_data["items"]["llave"] = "Una llave chica."
+                room_data["items"]["pagina1"] = "Una página de diario."
+                return "Marcás 1503 en el disco... ¡clic! La caja fuerte se abre. Adentro hay una llave chica y una página de diario."
+            return "Marcás ese código en el disco... no pasa nada. Ese no es."
 
     if target == "llave" and current_room == "dormitorio":
         if "llave" not in game["inventory"]:

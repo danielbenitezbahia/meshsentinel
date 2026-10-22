@@ -80,13 +80,14 @@ _SENTINEL_LOG_SLOTS = [
      "⚠️ Corrección SMNAlert: la clave que mandamos hoy a las 13hs tenía un carácter de menos. La clave correcta es:\n"
      "s5kHDQ1KmyL8e21jV/tZh5XA6MScZxOuC1WrgwysavY="),
     ((2026, 10, 20, 20),
-     "📟 SENTINEL BBS: el Escape Room 🚪 y el ZORK 🗺 ya están arreglados y 100% en castellano. "
-     "Para jugar: mandale un mensaje directo al nodo Sentinel BBS, vas a ver un menú — elegí 🎮 Juegos "
-     "y después el que quieras. Disponible cuando quieras, no hace falta esperar nada."),
+     "📟 Sentinel BBS: Escape Room 🚪 y ZORK 🗺 arreglados, 100% en castellano."),
+    ((2026, 10, 20, 20),
+     "Nuevo: Escape Room Criollo 🏚, con onda meshtástica. DM al nodo Sentinel BBS → 🎮 Juegos."),
     ((2026, 10, 23, 20),
-     "¡Buen viernes, mesh del sudoeste y aledaños...! 📟 Sentinel BBS tiene el Escape Room 🚪 y el ZORK 🗺 "
-     "listos, arreglados y en castellano. Mandale un DM al nodo cuando quieras, entrá a 🎮 Juegos y elegí "
-     "tu aventura. ¡Buen finde!"),
+     "¡Buen viernes, mesh del sudoeste y aledaños...! 📟 Escape Room 🚪, ZORK 🗺 y el nuevo "
+     "Escape Room Criollo 🏚 están listos."),
+    ((2026, 10, 23, 20),
+     "Todo en castellano. DM al nodo Sentinel BBS → 🎮 Juegos → elegí tu aventura. ¡Buen finde!"),
 ]
 
 # Invitación al canal SMNAlert — una vez por día en las fechas indicadas, al
@@ -178,7 +179,11 @@ class BBSSystem:
             _now_key = (_now_dt.year, _now_dt.month, _now_dt.day, _now_dt.hour)
             for idx, (slot, _msg) in enumerate(_SENTINEL_LOG_SLOTS, start=1):
                 if _now_key == slot:
-                    _key = "sentinel_log:{}-{:02d}-{:02d}-{:02d}".format(*slot)
+                    # El indice entra en la clave para que dos entradas con el
+                    # mismo (año,mes,día,hora) -- p.ej. un anuncio partido en
+                    # 2 mensajes cortos para no fragmentar por MAX_BYTES --
+                    # no compartan el mismo "ya enviado" y se pisen entre sí.
+                    _key = "sentinel_log:{}-{:02d}-{:02d}-{:02d}-{}".format(*slot, idx)
                     if not traffic_stats.broadcast_already_sent(_key):
                         traffic_stats.mark_broadcast_sent(_key)
                         try:
@@ -478,7 +483,7 @@ class BBSSystem:
         "Mensajes":     "💬",
         "Nodos":        "📡",
         "Juegos":       "🎮",
-        "Mail":         "📬",
+        "Mensaje Diferido": "📬",
     }
     SUBMODULE_ICONS = {
         "Estado de Red":    "🔍",

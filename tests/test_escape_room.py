@@ -194,16 +194,110 @@ class TestMainQuestKeyAndDoor(EscapeRoomTestBase):
         self.assertIn("Comando inválido", out)
         self.assertFalse(self.game()["door_unlocked"])
 
+    def test_examine_puerta_desde_start_antes_de_desbloquear(self):
+        # Reporte real de playtesting: "start" describe "una puerta al
+        # norte" pero antes el objeto "puerta" solo existia en locked_door
+        # (inalcanzable sin desbloquearla primero) -- quedaba inexaminable
+        # desde la propia sala que la menciona.
+        out = self.send("examinar puerta")
+        self.assertIn("cerrada con llave", out)
+
     def test_examine_puerta_reflects_unlocked_state(self):
-        # "puerta" solo es examinable desde locked_door, que es inalcanzable
-        # hasta desbloquear la puerta -- por eso se verifica justo despues
-        # del escape (unico momento en que se puede llegar a examinarla).
         self.send("examinar cajon")
         self.send("recoger llave")
         self.send("usar llave")
         self.send("norte")  # escapa, current_room ahora es locked_door
         out = self.send("examinar puerta")
         self.assertIn("desbloqueada", out)
+
+    def test_examinar_cerradura_en_start_es_alias_de_puerta(self):
+        out = self.send("examinar cerradura")
+        self.assertIn("cerrada con llave", out)
+
+    def test_abrir_cajon_es_alias_de_examinar(self):
+        # Reporte real de playtesting: "examinar mesa" dice literalmente
+        # "deberias abrir el cajon", pero "abrir" no estaba implementado.
+        out = self.send("abrir cajon")
+        self.assertIn("llave oxidada", out)
+        self.assertIn("llave", self.game()["rooms"]["start"]["items"])
+
+    def test_abrir_puerta_es_alias_de_examinar(self):
+        out = self.send("abrir puerta")
+        self.assertIn("cerrada con llave", out)
+
+    def test_examinar_cajon_con_tilde_funciona_igual(self):
+        # El juego muestra "cajón" con tilde en su propio texto; si el
+        # jugador lo copia tal cual, debe apuntar al mismo objeto.
+        out = self.send("examinar cajón")
+        self.assertIn("llave oxidada", out)
+
+
+class TestCuadroPuzzle(EscapeRoomTestBase):
+    # "examinar mesa" ya decia "deberias abrir el cajon" (ahora resuelto via
+    # el alias "abrir"); el cuadro tenia la misma clase de pista colgada
+    # ("deberias acomodarlo") sin ningun comando "acomodar" implementado.
+    def test_examine_cuadro_antes_de_acomodar(self):
+        out = self.send("examinar cuadro")
+        self.assertIn("deberías acomodarlo", out)
+
+    def test_acomodar_cuadro_revela_moneda(self):
+        out = self.send("acomodar cuadro")
+        self.assertIn("moneda", out)
+        self.assertIn("moneda", self.game()["rooms"]["start"]["items"])
+
+    def test_examine_cuadro_despues_de_acomodar_sin_agarrar_moneda(self):
+        self.send("acomodar cuadro")
+        out = self.send("examinar cuadro")
+        self.assertIn("hueco con una moneda", out)
+
+    def test_acomodar_cuadro_dos_veces_no_duplica_moneda(self):
+        self.send("acomodar cuadro")
+        self.send("acomodar cuadro")
+        self.assertEqual(
+            list(self.game()["rooms"]["start"]["items"].keys()), ["moneda"]
+        )
+        self.assertNotIn("moneda", self.game()["inventory"])
+
+    def test_recoger_moneda_despues_de_acomodar(self):
+        self.send("acomodar cuadro")
+        out = self.send("recoger moneda")
+        self.assertEqual(out, "Recogiste: moneda.")
+        self.assertIn("moneda", self.game()["inventory"])
+
+    def test_recoger_moneda_antes_de_acomodar_falla(self):
+        out = self.send("recoger moneda")
+        self.assertEqual(out, "No podés recoger eso.")
+
+    def test_examine_cuadro_despues_de_agarrar_moneda(self):
+        self.send("acomodar cuadro")
+        self.send("recoger moneda")
+        out = self.send("examinar cuadro")
+        self.assertEqual(out, "El cuadro, ahora derecho, tapa un hueco vacío en la pared.")
+
+    def test_acomodar_cuadro_despues_de_agarrar_moneda(self):
+        self.send("acomodar cuadro")
+        self.send("recoger moneda")
+        out = self.send("acomodar cuadro")
+        self.assertEqual(out, "El cuadro ya está derecho.")
+
+    def test_acomodar_cuadro_fuera_de_start_falla(self):
+        self.send("este")  # hidden_room, no tiene cuadro
+        out = self.send("acomodar cuadro")
+        self.assertEqual(out, "No ves eso acá.")
+
+    def test_acomodar_no_hace_nada_con_otro_objeto(self):
+        out = self.send("acomodar mesa")
+        self.assertIn("Comando inválido", out)
+
+    def test_moneda_no_afecta_el_resto_del_juego(self):
+        # Es un bonus 100% opcional: no debe interferir con la puerta ni el cofre.
+        self.send("acomodar cuadro")
+        self.send("recoger moneda")
+        self.send("examinar cajon")
+        self.send("recoger llave")
+        out = self.send("usar llave")
+        self.assertTrue(self.game()["door_unlocked"])
+        self.assertIn("desbloquear la puerta", out)
 
 
 class TestEscapeEnding(EscapeRoomTestBase):
@@ -226,6 +320,12 @@ class TestEscapeEnding(EscapeRoomTestBase):
         out = self.send("norte")
         self.assertNotIn("Escapaste", out)
         self.assertIn("Te moviste hacia el norte", out)
+
+    def test_examinar_cerradura_en_locked_door_es_alias_de_puerta(self):
+        self._unlock_door()
+        self.send("norte")  # locked_door
+        out = self.send("examinar cerradura")
+        self.assertIn("desbloqueada", out)
 
 
 class TestSideQuestChest(EscapeRoomTestBase):
@@ -287,6 +387,75 @@ class TestSideQuestChest(EscapeRoomTestBase):
         self.send("recoger nota")
         self.send("usar nota")
         self.assertFalse(self.game()["door_unlocked"])
+
+    def test_examinar_libro_antes_de_estanteria_es_alias(self):
+        # Reporte real de playtesting: "examinar estanteria" dice "un libro
+        # parece fuera de lugar", y el jugador prueba con esa palabra.
+        out = self.send("examinar libro")
+        self.assertIn("combinación", out)
+        self.assertIn("nota", self.game()["rooms"]["hidden_room"]["items"])
+
+    def test_recoger_libro_es_alias_de_nota(self):
+        # Reporte real de playtesting: "recoger libro" no hacia nada porque
+        # el objeto interno se llama "nota", no "libro".
+        self.send("examinar estanteria")
+        out = self.send("recoger libro")
+        self.assertEqual(out, "Recogiste: nota.")
+        self.assertIn("nota", self.game()["inventory"])
+
+    def test_recoger_libro_antes_de_revelar_falla(self):
+        out = self.send("recoger libro")
+        self.assertEqual(out, "No podés recoger eso.")
+
+    def test_usar_libro_es_alias_de_nota(self):
+        self.send("examinar estanteria")
+        self.send("recoger libro")
+        out = self.send("usar libro")
+        self.assertIn("cofre se abre", out)
+        self.assertTrue(self.game()["chest_unlocked"])
+
+    def test_examinar_estanteria_con_tilde_funciona_igual(self):
+        out = self.send("examinar estantería")
+        self.assertIn("combinación", out)
+        self.assertIn("nota", self.game()["rooms"]["hidden_room"]["items"])
+
+    def test_abrir_estanteria_es_alias_de_examinar(self):
+        out = self.send("abrir estanteria")
+        self.assertIn("combinación", out)
+        self.assertIn("nota", self.game()["rooms"]["hidden_room"]["items"])
+
+    def test_abrir_cofre_es_alias_de_examinar(self):
+        out = self.send("abrir cofre")
+        self.assertIn("cerradura de combinación", out)
+
+    def test_examinar_cerradura_en_hidden_room_es_alias_de_cofre(self):
+        # La misma palabra "cerradura" tambien aparece en la descripcion
+        # del cofre -- en esta sala debe apuntar al cofre, no a la puerta.
+        out = self.send("examinar cerradura")
+        self.assertIn("cerradura de combinación", out)
+
+    def test_recoger_gema_despues_de_abrir_cofre(self):
+        # Antes del fix, la gema se mencionaba ("Adentro ves una gema
+        # brillante") pero nunca se agregaba a los items de la sala --
+        # "recoger gema" fallaba siempre, sin forma de completar el botin.
+        self.send("examinar estanteria")
+        self.send("recoger nota")
+        self.send("usar nota")
+        out = self.send("recoger gema")
+        self.assertEqual(out, "Recogiste: gema.")
+        self.assertIn("gema", self.game()["inventory"])
+
+    def test_recoger_gema_antes_de_abrir_cofre_falla(self):
+        out = self.send("recoger gema")
+        self.assertEqual(out, "No podés recoger eso.")
+
+    def test_examine_cofre_despues_de_agarrar_gema(self):
+        self.send("examinar estanteria")
+        self.send("recoger nota")
+        self.send("usar nota")
+        self.send("recoger gema")
+        out = self.send("examinar cofre")
+        self.assertEqual(out, "El cofre está abierto y vacío. Ya agarraste la gema.")
 
 
 class TestInventoryAndFallback(EscapeRoomTestBase):

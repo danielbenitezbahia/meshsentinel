@@ -24,7 +24,8 @@ def init_game():
                 "objects": {
                     "mesa": "Una vieja mesa de madera con un cajón.",
                     "cajon": "Un cajón de la mesa.",
-                    "cuadro": "Un cuadro de un paisaje; parece estar ligeramente torcido."
+                    "cuadro": "Un cuadro de un paisaje; parece estar ligeramente torcido.",
+                    "puerta": "La puerta está cerrada con llave. Hay una cerradura visible."
                 },
                 "items": {},
                 "exits": {"norte": "locked_door", "este": "hidden_room"}
@@ -55,6 +56,14 @@ def init_game():
         "escaped": False          # Si ya se mostró el mensaje de escape
     }
 
+_ACENTOS = str.maketrans("áéíóúÁÉÍÓÚ", "aeiouAEIOU")
+
+def _sin_acentos(texto):
+    """Normaliza acentos para que 'cajón'/'cajon', 'estantería'/'estanteria',
+    etc. apunten siempre al mismo objeto sin importar cómo los tipee el
+    jugador (las claves internas se definen sin tilde)."""
+    return texto.translate(_ACENTOS)
+
 def process_command(user_id, command, bbs_system):
     """Maneja los comandos del juego Escape Room."""
     if user_id not in bbs_system.users:
@@ -78,9 +87,29 @@ def process_command(user_id, command, bbs_system):
     parts = normalized.split(" ", 1)
     action = parts[0]
     target = parts[1].strip() if len(parts) > 1 else None
+    if target:
+        target = _sin_acentos(target)
+
+    # "abrir" es el verbo mas natural para cajones, cofres y puertas, y en
+    # este juego "examinar" ya hace exactamente eso (revela contenido o
+    # muestra el estado) -- se trata como el mismo comando.
+    if action == "abrir":
+        action = "examinar"
+
+    # Examinar la estantería revela un "libro fuera de lugar", pero el
+    # objeto recolectable real es la "nota" que estaba adentro -- alias
+    # para poder interactuar con la palabra que el jugador ve en pantalla.
+    if target in ["libro", "libros"]:
+        target = "estanteria" if action == "examinar" else "nota"
 
     current_room = game["current_room"]
     room_data = game["rooms"][current_room]
+
+    # "cerradura" aparece tanto en la puerta (start/locked_door) como en el
+    # cofre (hidden_room) -- son cerraduras distintas, el alias depende de
+    # en qué sala estás.
+    if target == "cerradura":
+        target = "cofre" if current_room == "hidden_room" else "puerta"
 
     # Movimiento
     if action in ["norte", "sur", "este", "oeste"]:
@@ -101,6 +130,12 @@ def process_command(user_id, command, bbs_system):
     # Usar objetos
     if action == "usar" and target:
         return use_item(target, game)
+
+    # Acomodar el cuadro torcido
+    if action == "acomodar" and target == "cuadro":
+        if "cuadro" not in room_data.get("objects", {}):
+            return "No ves eso acá."
+        return acomodar_cuadro(room_data, game)
 
     # Inventario
     if action == "inventario":
@@ -156,10 +191,17 @@ def examine_object(target, room_data, game):
         else:
             return "El cajón está vacío."
     elif target == "cuadro":
-        return "Un cuadro de un paisaje; parece estar ligeramente torcido. Tal vez deberías acomodarlo."
+        if "moneda" in game["inventory"]:
+            return "El cuadro, ahora derecho, tapa un hueco vacío en la pared."
+        elif "moneda" in room_data.get("items", {}):
+            return "El cuadro está derecho. Detrás hay un hueco con una moneda vieja."
+        else:
+            return "Un cuadro de un paisaje; parece estar ligeramente torcido. Tal vez deberías acomodarlo."
     elif target == "cofre":
         if not game["chest_unlocked"]:
             return "Un cofre antiguo con una cerradura de combinación. Quizás haya alguna pista cerca."
+        elif "gema" in game["inventory"]:
+            return "El cofre está abierto y vacío. Ya agarraste la gema."
         else:
             return "El cofre está abierto. Adentro ves una gema brillante."
     elif target == "estanteria":
@@ -173,6 +215,15 @@ def examine_object(target, room_data, game):
         return f"La puerta está {estado}. Hay una cerradura visible."
     else:
         return room_data["objects"][target]
+
+def acomodar_cuadro(room_data, game):
+    """Endereza el cuadro torcido de 'start', revelando un hueco con una
+    moneda. Puzzle chico y opcional, no bloquea el escape."""
+    if "moneda" in game["inventory"]:
+        return "El cuadro ya está derecho."
+    if "moneda" not in room_data.get("items", {}):
+        room_data["items"]["moneda"] = "Una moneda vieja y oxidada."
+    return "Enderezás el cuadro. Detrás hay un pequeño hueco en la pared, con una moneda vieja adentro."
 
 def pick_up_item(item, room_data, game):
     """Maneja recoger objetos."""
@@ -193,5 +244,6 @@ def use_item(target, game):
         if game["chest_unlocked"]:
             return "El cofre ya está abierto."
         game["chest_unlocked"] = True
+        game["rooms"]["hidden_room"]["items"]["gema"] = "Una gema brillante."
         return "Usaste la nota para marcar la combinación correcta. ¡El cofre se abre! Adentro hay una gema brillante."
     return "No podés usar eso acá."
