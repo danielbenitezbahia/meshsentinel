@@ -27,6 +27,7 @@ TARGET_PARTIDOS = {
     "adolfo alsina": "Adolfo Alsina",
     "guamini": "Guamini",
     "patagones": "Patagones",
+    "saavedra": "Saavedra",
 }
 
 _PARTIDOS_CACHE = None

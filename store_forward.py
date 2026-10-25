@@ -7,6 +7,7 @@ from typing import Optional, List, Tuple
 DB_PATH = "store_forward.sqlite"
 ONLINE_WINDOW_SECONDS = 10 * 60  # 10 min
 DELIVERY_INTERVAL_SECONDS = 60   # cada 60s (podés subir a 300)
+MAX_DELIVERY_ATTEMPTS = 10  # despues de esto se deja de reintentar (ver pending())
 
 
 def now_ts() -> int:
@@ -45,15 +46,19 @@ def enqueue(from_id: str, to_id: str, body: str) -> int:
 
 
 def pending(limit: int = 20) -> List[Tuple[int, str, str, str, int]]:
+    """Mensajes sin confirmar entrega, que todavia no agotaron sus
+    reintentos (ver MAX_DELIVERY_ATTEMPTS). 'delivered_at' solo se marca
+    cuando llega una confirmacion real de la radio (ACK), no al simplemente
+    intentar el envio."""
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute("""
       SELECT id, from_id, to_id, body, attempts
       FROM queue
-      WHERE delivered_at IS NULL
+      WHERE delivered_at IS NULL AND attempts < ?
       ORDER BY id ASC
       LIMIT ?
-    """, (limit,))
+    """, (MAX_DELIVERY_ATTEMPTS, limit))
     rows = cur.fetchall()
     con.close()
     return rows

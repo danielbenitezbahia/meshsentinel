@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import logging
@@ -1298,7 +1299,14 @@ class Interface:
         self._flush_stale_new_node_notifies(now)
 
     def send_message(self, user_id, message):
-        """Send a message back to the user (auto-split long messages)."""
+        """Send a message back to the user (auto-split long messages).
+
+        Fire-and-forget: no pide ACK al firmware. Se probó pedir
+        confirmación real (wantAck=True, con PKI explícito para evitar
+        NO_CHANNEL) para la entrega de 'tell', pero resultó poco confiable
+        en la práctica (el ACK muchas veces nunca llegaba, sin error ni
+        timeout visible) -- mientras que este envío simple es el que usa
+        confiablemente el resto del BBS para cada respuesta de menú."""
         try:
             destination = int(user_id.lstrip("!"), 16)  # Remove `!` and convert to int
 
@@ -1306,10 +1314,6 @@ class Interface:
             chunks = self._split_chunks(message, MAX_TEXT_LEN) if isinstance(message, str) else [str(message)]
 
             for i, chunk in enumerate(chunks, start=1):
-                # opcional: prefijo para saber que vienen partes
-                # if len(chunks) > 1:
-                #     chunk = f"[{i}/{len(chunks)}] {chunk}"
-
                 self.interface.sendText(chunk, destinationId=destination)
                 logger.info(f"Sent chunk {i}/{len(chunks)} to {user_id}: {chunk!r}")
                 time.sleep(0.2)  # mini pausa para no saturar

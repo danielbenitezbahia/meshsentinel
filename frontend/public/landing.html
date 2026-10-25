@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Sudoeste Mesh — Red Meshtastic en Bahía Blanca, Argentina</title>
+  <meta name="description" content="Red pública de radios Meshtastic (LoRa) en el sudoeste de la provincia de Buenos Aires: comunicación sin internet ni celular para emergencias y cortes de luz." />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://sentinelmesh.ar/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Sudoeste Mesh" />
+  <meta property="og:title" content="Sudoeste Mesh — Red Meshtastic en Bahía Blanca, Argentina" />
+  <meta property="og:description" content="Red pública de radios Meshtastic (LoRa) en el sudoeste de la provincia de Buenos Aires: comunicación sin internet ni celular para emergencias y cortes de luz." />
+  <meta property="og:url" content="https://sentinelmesh.ar/" />
+  <meta property="og:image" content="https://sentinelmesh.ar/sudoeste-mesh-logo.jpg" />
+  <meta property="og:locale" content="es_AR" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Sudoeste Mesh — Red Meshtastic en Bahía Blanca, Argentina" />
+  <meta name="twitter:description" content="Red pública de radios Meshtastic (LoRa) en el sudoeste de la provincia de Buenos Aires: comunicación sin internet ni celular para emergencias y cortes de luz." />
+  <meta name="twitter:image" content="https://sentinelmesh.ar/sudoeste-mesh-logo.jpg" />
+
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "Sudoeste Mesh",
+    "alternateName": "Sentinel BBS",
+    "url": "https://sentinelmesh.ar/",
+    "logo": "https://sentinelmesh.ar/sudoeste-mesh-logo.jpg",
+    "description": "Red pública de comunicaciones Meshtastic (LoRa) en el sudoeste de la provincia de Buenos Aires, Argentina.",
+    "areaServed": {
+      "@type": "Place",
+      "name": "Sudoeste de la provincia de Buenos Aires, Argentina"
+    }
+  }
+  </script>
+
+  <style>
+    :root {
+      /* layout: single-column editorial log, max 42rem, centered; mono chrome + serif narrative */
+      --bg: #0a1929;
+      --panel: #0d2137;
+      --panel-alt: #061524;
+      --border: #1e3a5f;
+      --text: #e3f2fd;
+      --text-muted: #90a4ae;
+      --text-dim: #546e7a;
+      --accent: #64b5f6;
+      --accent-bright: #42a5f5;
+      --font-mono: "JetBrains Mono", "Fira Code", monospace;
+      --font-serif: "Newsreader", Georgia, serif;
+      color-scheme: dark;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    body {
+      font-family: var(--font-mono);
+      -webkit-font-smoothing: antialiased;
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+    }
+
+    a { color: var(--accent); }
+
+    .wrap {
+      max-width: 42rem;
+      margin: 0 auto;
+    }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin: 0;
+    }
+
+    .narrative {
+      font-family: var(--font-serif);
+      font-size: 1.15rem;
+      line-height: 1.65;
+      color: var(--text);
+      max-width: 42rem;
+    }
+
+    /* header */
+    .site-header {
+      background: var(--panel-alt);
+      border-bottom: 1px solid var(--border);
+    }
+    .header-inner {
+      max-width: 42rem;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding-block: 0.85rem;
+      flex-wrap: wrap;
+    }
+    .wordmark {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      margin-right: auto;
+      min-width: 0;
+    }
+    .site-name {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 0.95rem;
+      letter-spacing: 0.04em;
+      color: var(--text);
+    }
+    .nav-cta {
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--bg);
+      background: var(--accent-bright);
+      text-decoration: none;
+      border-radius: 5px;
+      padding: 0.6rem 1.1rem;
+      white-space: nowrap;
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .nav-cta:hover { background: var(--accent); transform: translateY(-1px); }
+
+    main { padding-block: 2.5rem 3rem; }
+
+    .hero { padding-bottom: 1.75rem; }
+    .hero-logo {
+      display: block;
+      width: min(100%, 440px);
+      aspect-ratio: 1 / 1;
+      margin: 0 auto 1.75rem;
+      border-radius: 50%;
+    }
+    .hero .eyebrow { margin-bottom: 0.9rem; text-align: center; }
+    .hero h1 {
+      font-family: var(--font-mono);
+      font-size: clamp(1.5rem, 4.5vw, 2.1rem);
+      line-height: 1.35;
+      font-weight: 700;
+      margin: 0;
+      color: var(--text);
+      text-wrap: balance;
+      text-align: center;
+    }
+
+    .content-section { margin-bottom: 2.5rem; }
+    .content-section h2 {
+      font-family: var(--font-mono);
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--text);
+      margin: 0 0 1rem;
+    }
+    .content-section .narrative { margin: 0 0 1rem; }
+    .content-section .narrative:last-child { margin-bottom: 0; }
+
+    .feature-list {
+      list-style: none;
+      margin: 0 0 1.25rem;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    .feature-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.65rem;
+      font-family: var(--font-mono);
+      font-size: 0.92rem;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 0.7rem 0.85rem;
+    }
+    .feature-icon { flex-shrink: 0; }
+
+    .cta-section {
+      text-align: center;
+      padding: 2rem 1.5rem;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .cta-button {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--bg);
+      background: var(--accent-bright);
+      text-decoration: none;
+      padding: 0.8rem 1.5rem;
+      border-radius: 5px;
+      letter-spacing: 0.01em;
+    }
+    .cta-button:hover { background: var(--accent); }
+    .cta-sub {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin: 0.9rem 0 0;
+    }
+
+    footer {
+      max-width: 42rem;
+      margin: 0 auto;
+      padding-block: 1.5rem 2.5rem;
+      border-top: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-dim);
+    }
+
+    @media (max-width: 420px) {
+      .narrative { font-size: 1.05rem; }
+      .hero h1 { font-size: 1.4rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="wordmark">
+          <span class="eyebrow">Red Pública</span>
+          <span class="site-name">SUDOESTE MESH</span>
+        </div>
+        <a href="/mesh" class="nav-cta">Ver mapa en vivo →</a>
+      </div>
+    </header>
+  </div>
+
+  <main class="wrap">
+    <section class="hero">
+      <img src="/sudoeste-mesh-logo.jpg" alt="Logo de Sudoeste Mesh" class="hero-logo" />
+      <p class="eyebrow">Sentinel BBS · Sudoeste de la Provincia de Buenos Aires, Argentina</p>
+      <h1>Comunicación que no depende de la luz, ni del celular, ni de internet.</h1>
+    </section>
+
+    <section class="content-section">
+      <h2>¿Qué es Sudoeste Mesh?</h2>
+      <p class="narrative">Nació de la curiosidad: radioaficionados y entusiastas de la tecnología del sudoeste bonaerense, buscando algo puntual.</p>
+      <p class="narrative">Esa búsqueda ya llevaba un tiempo cuando los sucesos trágicos de los últimos años la pusieron a prueba. El temporal de diciembre 2023 (19 torres de alta tensión caídas, semanas sin luz, 13 víctimas) y la inundación de marzo 2025 (18 muertos, miles de evacuados) no explican por qué nació esta red — pero sí por qué creció tan rápido.</p>
+      <p class="narrative">Hoy es una <strong>red pública</strong> armada por vecinos de Bahía Blanca, Coronel Rosales, Monte Hermoso, Coronel Dorrego, Tornquist, Saavedra, etc.</p>
+      <p class="narrative">Usa el protocolo <strong>Meshtastic</strong>: cada nodo se conecta con los que tiene cerca y arma una malla que no depende de internet ni de la señal de celular. Anda con batería y puede durar días sin enchufe.</p>
+    </section>
+
+    <section class="content-section">
+      <h2>¿Para qué sirve?</h2>
+      <p class="narrative">Para mandar mensajes de texto entre nodos aunque no haya datos ni cobertura. Por ejemplo:</p>
+      <ul class="feature-list">
+        <li>En un corte de luz</li>
+        <li>En un corte de celular</li>
+        <li>En el campo, la sierra o la costa — donde la señal tradicional no llega</li>
+      </ul>
+    </section>
+
+    <section class="content-section">
+      <h2>Sentinel BBS</h2>
+      <p class="narrative">Es el nodo central de la red. Además de repetir mensajes por toda la malla, ofrece:</p>
+      <ul class="feature-list">
+        <li><span class="feature-icon">📬</span> Mensajes diferidos para nodos que están fuera de rango</li>
+        <li><span class="feature-icon">⚠️</span> Alertas meteorológicas vigentes del SMN por localidad</li>
+        <li><span class="feature-icon">⚡</span> Cortes de luz programados por EDES</li>
+      </ul>
+      <p class="narrative">Nada de esto sirve si el día que corta la luz el nodo está descargado o mal configurado.</p>
+      <p class="narrative">Por eso el BBS también suma funciones para que la gente entre seguido, no solo en una emergencia. Así los equipos se mantienen probados, cargados y en línea — listos para cuando de verdad hagan falta.</p>
+    </section>
+
+    <section class="cta-section">
+      <a href="/mesh" class="cta-button">Ver el mapa en vivo →</a>
+      <p class="cta-sub">Mapa, estadísticas y actividad de la red en tiempo real.</p>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    <p>sentinelmesh.ar · Sudoeste de la Provincia de Buenos Aires, Argentina</p>
+  </footer>
+</body>
+</html>

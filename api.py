@@ -10,6 +10,7 @@ Endpoints:
 
 import calendar
 import datetime
+import os
 import ipaddress
 import json
 import math
@@ -1286,7 +1287,7 @@ def get_moving_nodes():
 @app.get("/")
 def serve_index():
     _log_visit()
-    return send_from_directory(FRONTEND_DIST, "index.html")
+    return send_from_directory(FRONTEND_DIST, "landing.html")
 
 @app.get("/assets/<path:path>")
 def serve_assets(path):
@@ -1300,11 +1301,21 @@ def serve_favicon_png():
 def serve_favicon_ico():
     return send_from_directory(FRONTEND_DIST, "favicon.ico")
 
+@app.get("/robots.txt")
+def serve_robots():
+    return send_from_directory(FRONTEND_DIST, "robots.txt")
+
+@app.get("/sitemap.xml")
+def serve_sitemap():
+    return send_from_directory(FRONTEND_DIST, "sitemap.xml")
+
 
 @app.get("/<path:path>")
 def serve_spa(path):
     if path.startswith("api/"):
         abort(404)
+    if os.path.isfile(os.path.join(FRONTEND_DIST, path)):
+        return send_from_directory(FRONTEND_DIST, path)
     return send_from_directory(FRONTEND_DIST, "index.html")
 
 @app.errorhandler(404)

@@ -1,5 +1,10 @@
 import os
 import importlib
+import inspect
+from typing import Optional
+import announcement
+import edes_scraper
+import scheduled_broadcasts
 import store_forward
 import time
 import logging
@@ -62,6 +67,8 @@ SMN_ALERTS_CHANNEL_INDEX = 1   # canal primario SMN_Alertas
 SMN_ALERTS_CHANNEL_INDEX_2 = 2  # canal secundario SMN_Alertas (sin clave)
 SMNALERT_CHANNEL_REPLY_COOLDOWN = 600  # seg. entre respuestas automáticas en el canal (protege airtime)
 WEATHER_SCRAPER_INTERVAL_SECONDS = 10 * 60  # 10 minutos para actualizar alertas
+SYNC_NODE_ENV_INTERVAL_SECONDS = 60  # backstop: volcar environment_metrics desde el cache de nodos de la libreria
+EDES_SCRAPER_INTERVAL_SECONDS = 30 * 60  # corre cada 30 min, sin limite de una vez por dia
 FIRMS_POLL_INTERVAL_SECONDS = 10 * 60
 FIRMS_DELIVERY_INTERVAL_SECONDS = 60
 PARTIDO_ORDER = ["Bahia Blanca", "Monte Hermoso", "Coronel Dorrego", "Tornquist"]
@@ -84,10 +91,17 @@ _SENTINEL_LOG_SLOTS = [
     ((2026, 10, 20, 20),
      "Nuevo: Escape Room Criollo 🏚, con onda meshtástica. DM al nodo Sentinel BBS → 🎮 Juegos."),
     ((2026, 10, 23, 20),
-     "¡Buen viernes, mesh del sudoeste y aledaños...! 📟 Escape Room 🚪, ZORK 🗺 y el nuevo "
-     "Escape Room Criollo 🏚 están listos."),
+     "📟 Sentinel BBS: Escape Room 🚪 y ZORK 🗺 100% en castellano, y nuevo: Escape Room Criollo 🏚, "
+     "con onda meshtástica. DM al nodo Sentinel BBS → 🎮 Juegos."),
     ((2026, 10, 23, 20),
-     "Todo en castellano. DM al nodo Sentinel BBS → 🎮 Juegos → elegí tu aventura. ¡Buen finde!"),
+     "📬 Nuevo: Mensaje Diferido. Dejale un mensaje a cualquier nodo aunque no esté en rango — el BBS "
+     "lo guarda y te avisa cuando lo entrega. Comando: tell !nodeId tu mensaje"),
+    ((2026, 10, 23, 20),
+     "⚡ Nuevo en el menú: Cortes Programados EDES — lista los cortes de luz programados por localidad, "
+     "directo desde el BBS."),
+    ((2026, 10, 23, 20),
+     "⚠️ Alertas Vigentes SMN ahora también cubre el partido de Saavedra. Mirá los avisos por localidad "
+     "en el menú del BBS."),
 ]
 
 # Invitación al canal SMNAlert — una vez por día en las fechas indicadas, al
@@ -122,6 +136,8 @@ class BBSSystem:
         self._smnalert_channel_reply_last_ts = 0  # cooldown global de respuestas en el canal
 
         store_forward.init_db()
+        scheduled_broadcasts.init_db()
+        edes_scraper.init_db()
         bbs_users.init_db()
         bbs_messages.init_db()
         weather_alert_notifier.init_db()
@@ -129,9 +145,13 @@ class BBSSystem:
         self.firms_service = firms_service.FirmsService()
 
         self._last_delivery = 0
+        self._last_scheduled_broadcast_delivery = 0
         self._last_weather_alert_delivery = 0
         self._last_short_term_run = 0
         self._last_weather_scraper_run = 0
+        self._last_edes_scrape_attempt = 0
+        self._last_env_sync = 0
+        self._env_sync_last_heard = {}  # node_id -> ultimo lastHeard ya procesado
         self._last_firms_poll = 0
         self._last_firms_delivery = 0
         self._last_firms_cleanup = 0
@@ -203,6 +223,10 @@ class BBSSystem:
                 self._last_delivery = now
                 self.deliver_pending()
 
+            if (now - self._last_scheduled_broadcast_delivery) >= scheduled_broadcasts.DELIVERY_INTERVAL_SECONDS:
+                self._last_scheduled_broadcast_delivery = now
+                self.deliver_scheduled_broadcasts()
+
             if (now - self._last_weather_alert_delivery) >= weather_alert_notifier.DELIVERY_INTERVAL_SECONDS:
                 self._last_weather_alert_delivery = now
                 self.deliver_weather_alerts()
@@ -210,6 +234,14 @@ class BBSSystem:
             if (now - self._last_weather_scraper_run) >= WEATHER_SCRAPER_INTERVAL_SECONDS:
                 self._last_weather_scraper_run = now
                 self.refresh_weather_alerts()
+
+            if (now - self._last_env_sync) >= SYNC_NODE_ENV_INTERVAL_SECONDS:
+                self._last_env_sync = now
+                self.sync_environment_metrics_from_node_cache()
+
+            if (now - self._last_edes_scrape_attempt) >= EDES_SCRAPER_INTERVAL_SECONDS:
+                self._last_edes_scrape_attempt = now
+                self.refresh_edes_outages()
 
             if (now - self._last_firms_poll) >= FIRMS_POLL_INTERVAL_SECONDS:
                 self._last_firms_poll = now
@@ -326,6 +358,80 @@ class BBSSystem:
         if smn_response:
             return smn_response
 
+        if msg.lower().startswith("aviso "):
+            if not announcement.is_trusted(user_id):
+                return "No tenés permiso para usar ese comando."
+            parts = msg.split(" ", 2)
+            if len(parts) < 3:
+                return "Uso: aviso YYYY-MM-DD texto del mensaje"
+            fecha_str, texto = parts[1], parts[2].strip()
+            try:
+                datetime.strptime(fecha_str, "%Y-%m-%d")
+            except ValueError:
+                return "Fecha inválida. Formato: YYYY-MM-DD (ej: 2026-10-30)."
+            announcement.set_announcement(texto, fecha_str, user_id)
+            return f"BBS> Aviso guardado, vigente hasta el {fecha_str}."
+
+        if msg.lower().startswith("programar "):
+            if not announcement.is_trusted(user_id):
+                return "No tenés permiso para usar ese comando."
+            parts = msg.split(" ", 3)
+            if len(parts) < 4:
+                return "Uso: programar FECHA1,FECHA2 HORA1,HORA2 texto del mensaje"
+            fechas = [f.strip() for f in parts[1].split(",") if f.strip()]
+            horarios = [h.strip() for h in parts[2].split(",") if h.strip()]
+            texto = parts[3].strip()
+
+            total = len(fechas) * len(horarios)
+            if total == 0:
+                return "Uso: programar FECHA1,FECHA2 HORA1,HORA2 texto del mensaje"
+            if total > 20:
+                return (
+                    f"Demasiadas combinaciones ({len(fechas)} fechas x {len(horarios)} "
+                    f"horarios = {total}). Máximo 20."
+                )
+
+            combos = []
+            for f in fechas:
+                for h in horarios:
+                    try:
+                        combos.append(datetime.strptime(f"{f} {h}", "%Y-%m-%d %H:%M"))
+                    except ValueError:
+                        return f"Fecha u hora inválida: '{f} {h}'. Formato: YYYY-MM-DD y HH:MM."
+
+            combos.sort()
+            for dt in combos:
+                scheduled_broadcasts.enqueue(
+                    texto, int(dt.timestamp()), dt.strftime("%d/%m %H:%M"), user_id
+                )
+
+            lines = [f"BBS> {len(combos)} envíos programados al canal MediumFast:"]
+            lines += [dt.strftime("%d/%m %H:%M") for dt in combos]
+            return "\n".join(lines)
+
+        if msg.strip().lower() == "programados":
+            if not announcement.is_trusted(user_id):
+                return "No tenés permiso para usar ese comando."
+            rows = scheduled_broadcasts.pending()
+            if not rows:
+                return "No hay envíos programados pendientes."
+            lines = ["Envíos programados pendientes:"]
+            for qid, message, display, _created_by in rows:
+                preview = message if len(message) <= 40 else message[:37] + "..."
+                lines.append(f"#{qid} {display} — {preview}")
+            return "\n".join(lines)
+
+        if msg.lower().startswith("cancelar "):
+            if not announcement.is_trusted(user_id):
+                return "No tenés permiso para usar ese comando."
+            arg = msg.split(" ", 1)[1].strip()
+            if not arg.isdigit():
+                return "Uso: cancelar ID (el ID lo muestra 'programados')"
+            qid = int(arg)
+            if scheduled_broadcasts.cancel(qid):
+                return f"BBS> Envío programado #{qid} cancelado."
+            return f"No encontré ningún envío pendiente con ese ID (#{qid})."
+
         if msg.lower().startswith("tell "):
             parts = msg.split(" ", 2)
             if len(parts) < 3:
@@ -365,7 +471,12 @@ class BBSSystem:
         self.refresh_brandsen_weather_if_needed()
 
         weather_line = self.format_brandsen_weather_line()
-        phrase = self.get_random_welcome_phrase()
+        active = announcement.get_active_announcement()
+        if active:
+            vence = active["expires"].strftime("%d/%m")
+            phrase = f"📌 {active['text']}\n   (vigente hasta el {vence})"
+        else:
+            phrase = self.get_random_welcome_phrase()
 
         parts = []
         if weather_line:
@@ -418,9 +529,24 @@ class BBSSystem:
                 return self.handle_submenu(user_id, command, menu_data["submodules"])
             if hasattr(menu_data, "process_command"):
                 self.users[user_id]["module_control"] = menu_data
-                return menu_data.display_menu() if hasattr(menu_data, "display_menu") else "Entering module..."
+                if hasattr(menu_data, "display_menu"):
+                    return self._call_display_menu(menu_data)
+                return "Entering module..."
             return "Invalid command."
         return "Invalid command."
+
+    def _call_display_menu(self, module):
+        """Llama a module.display_menu(), pasándole el bbs_system (self) si
+        el módulo lo acepta -- para módulos que necesitan datos en vivo en
+        la primera pantalla (ej. alertas SMN vigentes), sin romper los
+        módulos existentes cuyo display_menu() no recibe argumentos."""
+        try:
+            params = inspect.signature(module.display_menu).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if params:
+            return module.display_menu(self)
+        return module.display_menu()
 
     def handle_main_menu(self, user_id, command):
         """
@@ -445,7 +571,7 @@ class BBSSystem:
                 self.users[user_id]["module_control"] = menu_entry
 
             if hasattr(menu_entry, "display_menu"):
-                return menu_entry.display_menu()
+                return self._call_display_menu(menu_entry)
 
             if "module_control" in self.users[user_id]:
                 return "Entering module..."
@@ -472,7 +598,9 @@ class BBSSystem:
             if 0 <= command_index < len(submenu_names):
                 selected_submodule = submodules[submenu_names[command_index]]
                 self.users[user_id]["module_control"] = selected_submodule
-                return selected_submodule.display_menu() if hasattr(selected_submodule, "display_menu") else "No menu available."
+                if hasattr(selected_submodule, "display_menu"):
+                    return self._call_display_menu(selected_submodule)
+                return "No menu available."
             return "Invalid option."
         except ValueError:
             return "Invalid input. Please enter a number."
@@ -484,6 +612,8 @@ class BBSSystem:
         "Nodos":        "📡",
         "Juegos":       "🎮",
         "Mensaje Diferido": "📬",
+        "Alertas Vigentes SMN": "⚠️",
+        "EDES Cortes Programados": "⚡",
     }
     SUBMODULE_ICONS = {
         "Estado de Red":    "🔍",
@@ -579,56 +709,49 @@ class BBSSystem:
         if not serial_iface:
             return
 
-        try:
-            nodes = getattr(serial_iface, "nodes", {}) or {}
-            now = int(time.time())
-
-            online = []
-            for node_id, info in nodes.items():
-                last = info.get("lastHeard") or info.get("lastHeardTimestamp") or info.get("last_heard")
-                if isinstance(last, (int, float)):
-                    age = now - int(last)
-                    if age <= store_forward.ONLINE_WINDOW_SECONDS:
-                        user = info.get("user", {}) if isinstance(info.get("user"), dict) else {}
-                        short = user.get("shortName") or info.get("shortName") or user.get("short_name") or info.get("short_name")
-                        longn = user.get("longName") or info.get("longName") or user.get("long_name") or info.get("long_name")
-                        online.append((node_id, age, short, longn))
-
-            logger.info(
-                "SF tick: known_nodes=%d online_nodes=%d window=%ds",
-                len(nodes),
-                len(online),
-                store_forward.ONLINE_WINDOW_SECONDS,
-            )
-
-            for node_id, age, short, longn in sorted(online, key=lambda x: x[1]):
-                label = short or longn or ""
-                if label:
-                    logger.info("SF online: %s (%s) lastHeard=%ds ago", node_id, label, age)
-                else:
-                    logger.info("SF online: %s lastHeard=%ds ago", node_id, age)
-
-        except Exception as e:
-            logger.error("SF tick: failed to list online nodes: %s", e)
-
         for msg_id, from_id, to_id, body, _attempts in store_forward.pending(limit=50):
             to_id = store_forward.normalize_node_id(to_id)
+            store_forward.inc_attempts(msg_id)
 
-            if not store_forward.is_online(serial_iface, to_id):
-                continue
-
+            # Fire-and-forget (sin pedir ACK): se probó pedir confirmación
+            # real y resultó poco confiable (el ACK muchas veces nunca
+            # llegaba, sin error ni timeout visible), mientras que este
+            # envío simple es el que usa confiablemente el resto del BBS
+            # para cada respuesta de menú. Se asume éxito si no tira
+            # excepción, igual que cualquier otra respuesta del BBS.
+            from_short_name = from_id
             try:
-                payload = f"MAIL de {from_id}: {body}"
-                self.interface.send_message(to_id, payload)
-
-                store_forward.inc_attempts(msg_id)
-                store_forward.mark_delivered(msg_id)
-
-                self.interface.send_message(from_id, f"BBS> mensaje #{msg_id} enviado a {to_id}")
-
+                nodes = getattr(serial_iface, "nodes", {}) or {}
+                info = nodes.get(from_id, {}) if isinstance(nodes, dict) else {}
+                user = info.get("user", {}) if isinstance(info.get("user"), dict) else {}
+                from_short_name = user.get("shortName") or info.get("shortName") or from_id
             except Exception:
-                store_forward.inc_attempts(msg_id)
+                from_short_name = from_id
+
+            payload = f"Mensaje diferido de 🔵 {from_short_name}: {body}"
+            try:
+                self.interface.send_message(to_id, payload)
+                store_forward.mark_delivered(msg_id)
+                logger.info("SF: mensaje #%d enviado a %s", msg_id, to_id)
+                try:
+                    self.interface.send_message(from_id, f"BBS> mensaje #{msg_id} enviado a {to_id}")
+                except Exception:
+                    logger.exception("SF: error avisando a %s sobre #%d", from_id, msg_id)
+            except Exception:
+                logger.exception("SF: error enviando #%d a %s", msg_id, to_id)
                 continue
+
+    def deliver_scheduled_broadcasts(self):
+        """Envía al canal MediumFast (0) los envíos programados (comando
+        'programar') cuya fecha/hora ya llegó. Si falla el envío, no se
+        marca como entregado -- se reintenta en el próximo tick."""
+        for qid, message, display in scheduled_broadcasts.due(limit=50):
+            try:
+                self.interface.send_channel_message(message, channel_index=0)
+                scheduled_broadcasts.mark_sent(qid)
+                logger.info("Envío programado #%d entregado (%s).", qid, display)
+            except Exception:
+                logger.exception("Error entregando envío programado #%d (%s).", qid, display)
 
     def get_random_welcome_phrase(self) -> str:
         _now = datetime.now()
@@ -636,13 +759,12 @@ class BBSSystem:
             return FIXED_WELCOME_PHRASE
         return random.choice(BBS_WELCOME_PHRASES)
 
-    def _extract_environment_metrics(self, info: dict):
-        """
-        Extrae temperatura, humedad y presión del node info.
-        Soporta diferentes formatos del lib Meshtastic.
-        """
+    def _find_environment_metrics_candidates(self, info: dict) -> list:
+        """Devuelve todos los dicts crudos de environmentMetrics posibles
+        dentro del node info cacheado por la librería meshtastic (puede
+        aparecer en distintas ubicaciones/formatos según versión)."""
         if not isinstance(info, dict):
-            return None
+            return []
 
         candidates = []
 
@@ -659,7 +781,68 @@ class BBSSystem:
         if isinstance(info.get("environment_metrics"), dict):
             candidates.append(info["environment_metrics"])
 
-        for em in candidates:
+        return candidates
+
+    def _find_usable_environment_metrics(self, info: dict) -> Optional[dict]:
+        """Como _extract_environment_metrics, pero devuelve el dict crudo
+        completo (no solo temp/hum/presión) para guardarlo tal cual vía
+        traffic_stats.record_environment_metrics, que ya sabe extraer
+        cada campo (incluidos gas/voltage/current/iaq)."""
+        for em in self._find_environment_metrics_candidates(info):
+            campos = (
+                em.get("temperature"),
+                em.get("relativeHumidity") or em.get("relative_humidity"),
+                em.get("barometricPressure") or em.get("barometric_pressure"),
+                em.get("gasResistance") or em.get("gas_resistance"),
+                em.get("voltage"), em.get("current"), em.get("iaq"),
+            )
+            if any(v is not None for v in campos):
+                return em
+        return None
+
+    def sync_environment_metrics_from_node_cache(self):
+        """Recorre todos los nodos conocidos por la librería meshtastic y
+        vuelca a environment_metrics lo que tengan cacheado -- backstop
+        general para cuando el callback de paquetes (TELEMETRY_APP) no
+        llega a procesar el dato puntual de un nodo (investigado en vivo:
+        el caché interno de la librería suele estar más actualizado que
+        lo que el callback por paquete efectivamente llega a escribir,
+        y esto le pasaba a varios nodos, no solo a Brandsen).
+
+        Solo escribe si el 'lastHeard' del nodo avanzó desde la última
+        pasada, para no generar filas repetidas con el mismo valor viejo
+        (lo que ocultaría justamente el problema de frescura que se
+        quiere detectar)."""
+        try:
+            serial_iface = getattr(self.interface, "interface", None)
+            nodes = getattr(serial_iface, "nodes", {}) if serial_iface else {}
+            if not isinstance(nodes, dict):
+                return
+
+            for node_id, info in nodes.items():
+                if not isinstance(info, dict):
+                    continue
+                last_heard = info.get("lastHeard") or info.get("lastHeardTimestamp") or info.get("last_heard")
+                if not isinstance(last_heard, (int, float)):
+                    continue
+
+                previous = self._env_sync_last_heard.get(node_id)
+                if previous is not None and last_heard <= previous:
+                    continue
+                self._env_sync_last_heard[node_id] = last_heard
+
+                em = self._find_usable_environment_metrics(info)
+                if em:
+                    traffic_stats.record_environment_metrics(node_id, em)
+        except Exception as exc:
+            logger.exception("Error en sync_environment_metrics_from_node_cache: %s", exc)
+
+    def _extract_environment_metrics(self, info: dict):
+        """
+        Extrae temperatura, humedad y presión del node info.
+        Soporta diferentes formatos del lib Meshtastic.
+        """
+        for em in self._find_environment_metrics_candidates(info):
             temp = em.get("temperature") or em.get("temp") or em.get("temperature_c")
             hum = em.get("relativeHumidity") or em.get("relative_humidity") or em.get("humidity") or em.get("hum")
             pres = em.get("barometricPressure") or em.get("barometric_pressure") or em.get("pressure") or em.get("pres")
@@ -804,6 +987,20 @@ class BBSSystem:
             logger.info("Weather alerts scraper completed successfully")
         except Exception as exc:
             logger.exception("Error running weather alerts scraper: %s", exc)
+
+    def refresh_edes_outages(self) -> bool:
+        """Corre el scraper de cortes programados de EDES cada
+        EDES_SCRAPER_INTERVAL_SECONDS (30 min). Devuelve True/False según
+        si la corrida fue exitosa, para logging. Todavía no publica nada
+        en ningún lado -- solo guarda los datos para una etapa futura."""
+        try:
+            logger.info("Running EDES outages scraper...")
+            count = edes_scraper.run()
+            logger.info("EDES outages scraper completed: %d corte(s).", count)
+            return True
+        except Exception as exc:
+            logger.exception("Error running EDES outages scraper: %s", exc)
+            return False
 
     def handle_smn_command(self, sender: str, text: str):
         parts = text.strip().upper().split()
