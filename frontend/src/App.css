@@ -476,6 +476,35 @@ body, #root {
   color: #ffb74d;
 }
 
+.btn-view-toggle {
+  /* position:fixed + renderizado por afuera del árbol del mapa (vía
+     createPortal a document.body) a propósito: con position:absolute
+     como hermano del canvas WebGL de MapLibre/three.js, en algunos
+     navegadores el canvas lo pintaba encima y solo se veía mientras el
+     mapa se estaba redibujando activamente (arrastrando). Estando fuera
+     del todo de ese subárbol, no hay con qué compita el z-index.
+     top/right se fijan inline (useFloatingTogglePosition), medidos en
+     vivo contra el área del mapa -- acá solo el resto del estilo. */
+  position: fixed;
+  z-index: 9999;
+  background: #42a5f5;
+  color: #0a1929;
+  border: none;
+  border-radius: 24px;
+  padding: 11px 20px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  transition: background 0.15s, transform 0.15s;
+}
+
+.btn-view-toggle:hover {
+  background: #64b5f6;
+  transform: translateY(-1px);
+}
+
 .btn-refresh {
   background: #1565c0;
   color: #e3f2fd;

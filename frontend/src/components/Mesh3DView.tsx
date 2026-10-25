@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   Map as MapLibreMap,
   Marker,
@@ -18,6 +19,7 @@ import { fetchGraph, setNodeAltitudeOverride } from "../api";
 import type { MeshNode, MeshEdge } from "../types";
 import { hashNodeColor, isRecentEnoughForMap } from "../mapVisuals";
 import { FloatingNodesLayer, type FloatingNode, type FloatingEdge } from "../mesh3dFloatingLayer";
+import { useFloatingTogglePosition } from "../useFloatingTogglePosition";
 
 setWorkerUrl(maplibreWorkerUrl);
 
@@ -231,7 +233,7 @@ function makeMarkerEl(node: MeshNode, altLabel: string, selected: boolean): HTML
   return el;
 }
 
-export default function Mesh3DView() {
+export default function Mesh3DView({ onSwitchTo2D }: { onSwitchTo2D: () => void }) {
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [edges, setEdges] = useState<MeshEdge[]>([]);
   const [loading, setLoading] = useState(false);
@@ -257,6 +259,7 @@ export default function Mesh3DView() {
   const [saving, setSaving] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const togglePos = useFloatingTogglePosition(containerRef);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markersRef = useRef<Map<string, Marker>>(new Map());
   const terrainReadyRef = useRef(false);
@@ -629,6 +632,16 @@ export default function Mesh3DView() {
           <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
         </div>
       </main>
+      {createPortal(
+        <button
+          className="btn-view-toggle"
+          style={{ top: togglePos.top, right: togglePos.right }}
+          onClick={onSwitchTo2D}
+        >
+          🗺 Ver en 2D
+        </button>,
+        document.body
+      )}
 
       {editingNode && (
         <div className="mesh3d-editor-backdrop" onClick={closeEditor}>

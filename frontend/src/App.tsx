@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
+import { createPortal } from "react-dom";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { fetchGraph } from "./api";
 import type { MeshNode, MeshEdge, GraphFreshness } from "./types";
@@ -8,13 +9,27 @@ import TrackView from "./components/TrackView";
 import StatsView from "./components/StatsView";
 import MeshWarsView from "./components/MeshWarsView";
 import ActivityView from "./components/ActivityView";
+import { useFloatingTogglePosition } from "./useFloatingTogglePosition";
 import "./App.css";
 
 // MapLibre GL pesa bastante (WebGL) — carga diferida para no inflar el
 // bundle de las pestañas que no lo necesitan.
 const Mesh3DView = lazy(() => import("./components/Mesh3DView"));
 
-function MeshView() {
+function MeshTab() {
+  const [view3D, setView3D] = useState(false);
+
+  if (view3D) {
+    return (
+      <Suspense fallback={<div className="app-loading">Cargando mapa 3D…</div>}>
+        <Mesh3DView onSwitchTo2D={() => setView3D(false)} />
+      </Suspense>
+    );
+  }
+  return <MeshView onSwitchTo3D={() => setView3D(true)} />;
+}
+
+function MeshView({ onSwitchTo3D }: { onSwitchTo3D: () => void }) {
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [edges, setEdges] = useState<MeshEdge[]>([]);
   const [freshness, setFreshness] = useState<GraphFreshness | null>(null);
@@ -24,6 +39,8 @@ function MeshView() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const graphAreaRef = useRef<HTMLDivElement>(null);
+  const togglePos = useFloatingTogglePosition(graphAreaRef);
 
   const loadGraph = useCallback(async () => {
     setLoading(true);
@@ -120,7 +137,7 @@ function MeshView() {
           </button>
         </div>
         {error && <div className="error-bar">{error}</div>}
-        <div className="graph-area">
+        <div className="graph-area" ref={graphAreaRef}>
           <MapView
             nodes={nodes}
             edges={edges}
@@ -128,6 +145,16 @@ function MeshView() {
             onSelectNode={(id) => selectNode(id)}
           />
         </div>
+        {createPortal(
+          <button
+            className="btn-view-toggle"
+            style={{ top: togglePos.top, right: togglePos.right }}
+            onClick={onSwitchTo3D}
+          >
+            🧊 Ver en 3D
+          </button>,
+          document.body
+        )}
         {selectedNode && (
           <NodePanel node={selectedNode} onClose={() => { setSelectedId(""); setSelectedNode(null); }} />
         )}
@@ -142,7 +169,6 @@ export default function App() {
       <nav className="tabbar">
         <span className="tabbar-brand">Sentinel BBS</span>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/mesh">Mesh</NavLink>
-        <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/mesh3d">Mesh 3D</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/trayectorias">Trayectorias</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/estadisticas">Estadísticas</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/actividad">Actividad</NavLink>
@@ -151,15 +177,8 @@ export default function App() {
 
       <Routes>
         <Route path="/" element={<Navigate to="/mesh" replace />} />
-        <Route path="/mesh" element={<MeshView />} />
-        <Route
-          path="/mesh3d"
-          element={
-            <Suspense fallback={<div className="app-loading">Cargando mapa 3D…</div>}>
-              <Mesh3DView />
-            </Suspense>
-          }
-        />
+        <Route path="/mesh" element={<MeshTab />} />
+        <Route path="/mesh3d" element={<Navigate to="/mesh" replace />} />
         <Route path="/trayectorias" element={<TrackView />} />
         <Route path="/estadisticas" element={<StatsView />} />
         <Route path="/actividad" element={<ActivityView />} />
