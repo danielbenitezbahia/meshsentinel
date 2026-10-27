@@ -314,6 +314,40 @@ def record_neighbors(reporter_id: str, neighbors: list):
     con.close()
 
 
+def has_any_neighbor_edge(node_id: str) -> bool:
+    """True si el nodo tiene al menos una fila en node_neighbors, como
+    reporter o como neighbor (es decir, ya tiene alguna arista en el grafo
+    por NeighborInfo o por un traceroute de relleno anterior)."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute(
+        "SELECT 1 FROM node_neighbors WHERE reporter = ? OR neighbor = ? LIMIT 1",
+        (node_id, node_id),
+    )
+    row = cur.fetchone()
+    con.close()
+    return row is not None
+
+
+def get_orphan_nodes(active_within_seconds: int = 6 * 3600) -> list:
+    """Nodos vistos dentro de la ventana (por defecto 6hs, igual que el corte
+    de visibilidad del mapa) que no tienen NINGUNA arista en node_neighbors
+    -- candidatos a un traceroute ocasional para completarles al menos una
+    conexión (ver _sweep_orphan_nodes en interface.py)."""
+    cutoff = _now() - active_within_seconds
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT node_id FROM node_stats
+        WHERE last_seen_ts >= ?
+          AND node_id NOT IN (SELECT reporter FROM node_neighbors)
+          AND node_id NOT IN (SELECT neighbor FROM node_neighbors)
+    """, (cutoff,))
+    rows = [r[0] for r in cur.fetchall()]
+    con.close()
+    return rows
+
+
 def record_node_event(
     node_id: str,
     short_name: Optional[str],

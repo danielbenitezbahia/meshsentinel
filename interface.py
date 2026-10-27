@@ -45,6 +45,8 @@ class Interface:
         self._decrypt_key_used: dict = {}       # from_id → pub_key que funcionó para descifrar
         self._pending_new_node_notify: dict = {}  # node_id → datos del aviso en espera del traceroute
         self._traceroute_tick_last = 0
+        self._orphan_sweep_last = 0
+        self._orphan_traceroute_last: dict = {}  # node_id → último traceroute de relleno (cooldown)
         self._recent_channel_msg_ids: dict = {}   # packet_id → ts, para no reprocesar duplicados de mesh
 
     def load_device_path(self):
@@ -429,12 +431,17 @@ class Interface:
                     path = [self._own_node_id] + [f"!{n:08x}" for n in route_nums]
                     if sender not in path:
                         path.append(sender)
-                    # NOTA: ya no se graba en node_neighbors acá (eso alimentaba el
-                    # grafo de la pestaña Mesh). El grafo ahora se arma solo con
-                    # vecinos escuchados pasivamente por NEIGHBORINFO_APP; el
-                    # traceroute sigue disparándose y usándose para lo demás
-                    # (path completo, backfill de relay_node, heard_by, aviso de
-                    # nodo nuevo con ruta).
+                    # El grafo de la pestaña Mesh se arma principalmente con
+                    # vecinos escuchados pasivamente por NEIGHBORINFO_APP. Pero
+                    # un nodo relay que nunca lo habilita queda sin ninguna
+                    # arista aunque esté activo -- para ESE caso puntual (ver
+                    # _sweep_orphan_nodes), si quien respondió sigue sin
+                    # ninguna arista propia, se completa una con su relay
+                    # inmediato acá. Nunca pisa datos de NeighborInfo: si ya
+                    # tiene al menos una arista (de cualquier origen), no se
+                    # toca.
+                    if len(path) >= 2 and not traffic_stats.has_any_neighbor_edge(sender):
+                        traffic_stats.record_neighbors(path[-2], [{"node_id": sender, "snr": None}])
                     # Store full path for web display
                     traffic_stats.record_traceroute_path(sender, path)
                     # Backfill relay_node en puntos recientes sin relay (últimos 10 min)
@@ -1195,6 +1202,8 @@ class Interface:
 
     TRACK_TRACEROUTE_INTERVAL = 600  # mínimo 10 min entre traceroutes por nodo en movimiento
     NEW_NODE_NOTIFY_TIMEOUT = 45     # seg máx de espera por el traceroute antes de avisar sin ruta
+    ORPHAN_SWEEP_INTERVAL = 300        # cada 5 min se revisa si hay nodos sin ninguna arista
+    ORPHAN_TRACEROUTE_COOLDOWN = 4 * 3600  # no re-intentar el mismo nodo antes de esto
 
     def _label_for_node(self, node_id: str) -> str:
         """Nombre corto para mostrar un nodo en una ruta (short_name > long_name > ID)."""
@@ -1243,6 +1252,31 @@ class Interface:
         self._track_traceroute_last[node_id] = now
         logger.info("traceroute prioritized for moving node %s", node_id)
 
+    def _sweep_orphan_nodes(self, now: float):
+        """Nodos activos (vistos hace <6hs, igual que el corte de visibilidad
+        del mapa) sin ninguna arista en node_neighbors -- típicamente nodos
+        relay/infraestructura que nunca habilitaron NEIGHBORINFO_APP. Se
+        encolan con baja prioridad (al final, no al frente) para un
+        traceroute ocasional; quien realmente graba la arista -- solo si el
+        nodo sigue sin ninguna -- es el handler de TRACEROUTE_APP en
+        on_receive()."""
+        try:
+            orphans = traffic_stats.get_orphan_nodes()
+        except Exception:
+            logger.exception("orphan sweep: failed to query candidates")
+            return
+
+        for node_id in orphans:
+            if node_id == self._own_node_id:
+                continue
+            if now - self._orphan_traceroute_last.get(node_id, 0) < self.ORPHAN_TRACEROUTE_COOLDOWN:
+                continue
+            if node_id in self._traceroute_queue:
+                continue
+            self._traceroute_queue.append(node_id)
+            self._orphan_traceroute_last[node_id] = now
+            logger.info("orphan node %s enqueued for gap-filling traceroute", node_id)
+
     def _send_traceroute(self, node_id: str):
         """Envía un traceroute sin bloquear el loop principal.
 
@@ -1286,11 +1320,17 @@ class Interface:
         if not self.interface or not self._own_node_id:
             return
 
-        # La cola ya no se repuebla periódicamente con todos los nodos activos
+        # La cola ya no se repuebla periódicamente con TODOS los nodos activos
         # (eso era para mantener fresco el grafo de la pestaña Mesh, que ahora
-        # se arma solo con vecinos escuchados pasivamente vía NEIGHBORINFO_APP).
-        # Se sigue alimentando puntualmente desde dos disparadores: nodo nuevo
-        # detectado (enqueue inmediato) y nodo en movimiento (_maybe_prioritize_traceroute).
+        # se arma principalmente con vecinos escuchados pasivamente vía
+        # NEIGHBORINFO_APP). Se alimenta puntualmente desde tres disparadores:
+        # nodo nuevo detectado (enqueue inmediato), nodo en movimiento
+        # (_maybe_prioritize_traceroute), y nodos sin ninguna arista todavía
+        # (_sweep_orphan_nodes, baja prioridad y bastante más espaciado).
+        if now - self._orphan_sweep_last >= self.ORPHAN_SWEEP_INTERVAL:
+            self._orphan_sweep_last = now
+            self._sweep_orphan_nodes(now)
+
         if self._traceroute_queue and (now - self._traceroute_last_send >= SEND_INTERVAL):
             target = self._traceroute_queue.popleft()
             self._send_traceroute(target)

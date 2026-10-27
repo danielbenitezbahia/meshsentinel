@@ -5,8 +5,12 @@ radio real), así que se instalan stubs mínimos en sys.modules antes de
 importar interface.py.
 """
 import inspect
+import os
 import re
+import sqlite3
 import sys
+import tempfile
+import time
 import types
 import unittest
 from unittest.mock import MagicMock
@@ -60,6 +64,7 @@ def _install_fake_meshtastic():
 _install_fake_meshtastic()
 
 import interface  # noqa: E402  (después de instalar los stubs de arriba)
+import traffic_stats  # noqa: E402  (sin deps externas, no necesita stub)
 
 TRACEROUTE_APP = 70
 TEST_NODE_ID = "!33695e54"
@@ -128,6 +133,70 @@ class WaypointDeleteTests(unittest.TestCase):
         self.assertFalse(
             self.iface.send_channel_waypoint_delete(waypoint_id=123456, channel_index=1)
         )
+
+
+class OrphanSweepTests(unittest.TestCase):
+    """_sweep_orphan_nodes: encolar (con baja prioridad y cooldown) nodos
+    activos sin ninguna arista todavía, para un traceroute ocasional de
+    relleno. Ver traffic_stats.get_orphan_nodes para la query en sí."""
+
+    def setUp(self):
+        self.iface = interface.Interface()
+        self.iface.interface = MagicMock()
+        self.iface._own_node_id = "!00000001"
+
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        self._tmp.close()
+        self._orig_db_path = traffic_stats.DB_PATH
+        traffic_stats.DB_PATH = self._tmp.name
+        traffic_stats.init_db()
+
+    def tearDown(self):
+        traffic_stats.DB_PATH = self._orig_db_path
+        if os.path.exists(self._tmp.name):
+            os.unlink(self._tmp.name)
+
+    def _insert_node(self, node_id):
+        con = sqlite3.connect(traffic_stats.DB_PATH)
+        ts = traffic_stats._now()
+        con.execute(
+            "INSERT INTO node_stats(node_id, first_seen_ts, last_seen_ts) VALUES (?, ?, ?)",
+            (node_id, ts, ts),
+        )
+        con.commit()
+        con.close()
+
+    def test_enqueues_orphan_node(self):
+        self._insert_node(TEST_NODE_ID)
+        self.iface._sweep_orphan_nodes(time.time())
+        self.assertIn(TEST_NODE_ID, self.iface._traceroute_queue)
+
+    def test_does_not_enqueue_node_with_existing_edge(self):
+        self._insert_node(TEST_NODE_ID)
+        self._insert_node("!deadbeef")
+        traffic_stats.record_neighbors(TEST_NODE_ID, [{"node_id": "!deadbeef", "snr": 5}])
+        self.iface._sweep_orphan_nodes(time.time())
+        self.assertNotIn(TEST_NODE_ID, self.iface._traceroute_queue)
+
+    def test_respects_cooldown(self):
+        self._insert_node(TEST_NODE_ID)
+        now = time.time()
+        self.iface._sweep_orphan_nodes(now)
+        self.assertEqual(len(self.iface._traceroute_queue), 1)
+        self.iface._traceroute_queue.clear()
+        self.iface._sweep_orphan_nodes(now + 10)  # mucho antes del cooldown de 4hs
+        self.assertEqual(len(self.iface._traceroute_queue), 0)
+
+    def test_does_not_duplicate_if_already_queued(self):
+        self._insert_node(TEST_NODE_ID)
+        self.iface._traceroute_queue.append(TEST_NODE_ID)
+        self.iface._sweep_orphan_nodes(time.time())
+        self.assertEqual(list(self.iface._traceroute_queue).count(TEST_NODE_ID), 1)
+
+    def test_skips_own_node_id(self):
+        self._insert_node(self.iface._own_node_id)
+        self.iface._sweep_orphan_nodes(time.time())
+        self.assertNotIn(self.iface._own_node_id, self.iface._traceroute_queue)
 
 
 if __name__ == "__main__":
