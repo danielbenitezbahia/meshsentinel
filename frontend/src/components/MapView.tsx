@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { MeshNode, MeshEdge } from "../types";
-import { hashNodeColor, isRecentEnoughForMap } from "../mapVisuals";
+import { hashNodeColor, isRecentEnoughForMap, isHiddenFromMap, computeSuspectNodeIds, snrToColor } from "../mapVisuals";
 
 interface Props {
   nodes: MeshNode[];
@@ -47,11 +47,28 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
+  const linesRef = useRef<L.Polyline[]>([]);
+
+  // ── aislar conexiones (igual que en el mapa 3D) ───────────────────────────
+  // Con esto activo, las líneas arrancan apagadas; tocar un nodo prende las
+  // suyas y se van acumulando -- cada nodo tocado queda prendido hasta que
+  // se vuelve a apretar el toggle, que resetea todo.
+  const [isolateMode, setIsolateMode] = useState(false);
+  const [pinnedNodes, setPinnedNodes] = useState<Set<string>>(new Set());
+
+  const toggleIsolateMode = useCallback(() => {
+    setIsolateMode((prev) => !prev);
+    setPinnedNodes(new Set());
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const nodesWithPos = nodes.filter((n) => n.lat != null && n.lon != null && isRecentEnoughForMap(n.last_seen_mins_ago));
+    const suspectIds = computeSuspectNodeIds(nodes, edges);
+    const nodesWithPos = nodes.filter((n) =>
+      n.lat != null && n.lon != null && isRecentEnoughForMap(n.last_seen_mins_ago) &&
+      !isHiddenFromMap(n.short_name, n.long_name) && !suspectIds.has(n.node_id)
+    );
     if (nodesWithPos.length === 0) return;
 
     if (!mapRef.current) {
@@ -69,6 +86,41 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
     }
 
     const map = mapRef.current;
+
+    linesRef.current.forEach((l) => l.remove());
+    linesRef.current = [];
+
+    const nodeById = new Map(nodesWithPos.map((n) => [n.node_id, n]));
+    const seenEdges = new Set<string>();
+    for (const e of edges) {
+      const a = nodeById.get(e.reporter);
+      const b = nodeById.get(e.neighbor);
+      if (!a || !b || a.lat == null || a.lon == null || b.lat == null || b.lon == null) continue;
+
+      const key = [e.reporter, e.neighbor].sort().join("||");
+      if (seenEdges.has(key)) continue;
+      seenEdges.add(key);
+
+      const aPinned = pinnedNodes.has(e.reporter);
+      const bPinned = pinnedNodes.has(e.neighbor);
+      if (isolateMode && !aPinned && !bPinned) continue;
+
+      const snr = e.snr ?? e.snr_reverse;
+      const aName = a.short_name || a.node_id;
+      const bName = b.short_name || b.node_id;
+
+      const line = L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
+        color: snrToColor(snr),
+        weight: 2,
+        opacity: 0.65,
+      });
+      line.bindTooltip(
+        `<b>${aName} ↔ ${bName}</b>` + (snr != null ? `<br>${snr} dB` : ""),
+        { direction: "center", sticky: true, className: "mesh-tooltip" }
+      );
+      line.addTo(map);
+      linesRef.current.push(line);
+    }
 
     markersRef.current.forEach((m) => m.remove());
     markersRef.current.clear();
@@ -91,11 +143,16 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
         { direction: "top", offset: [0, -40] }
       );
 
-      marker.on("click", () => onSelectNode(node.node_id));
+      marker.on("click", () => {
+        onSelectNode(node.node_id);
+        if (isolateMode) {
+          setPinnedNodes((prev) => (prev.has(node.node_id) ? prev : new Set(prev).add(node.node_id)));
+        }
+      });
       marker.addTo(map);
       markersRef.current.set(node.node_id, marker);
     }
-  }, [nodes, edges]);
+  }, [nodes, edges, isolateMode, pinnedNodes]);
 
   useEffect(() => {
     const nodeMap = new Map(nodes.map((n) => [n.node_id, n]));
@@ -117,12 +174,25 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
     return () => { mapRef.current?.remove(); mapRef.current = null; };
   }, []);
 
-  const withPos = nodes.filter((n) => n.lat != null && isRecentEnoughForMap(n.last_seen_mins_ago)).length;
+  const statusSuspectIds = computeSuspectNodeIds(nodes, edges);
+  const withPos = nodes.filter((n) =>
+    n.lat != null && isRecentEnoughForMap(n.last_seen_mins_ago) &&
+    !isHiddenFromMap(n.short_name, n.long_name) && !statusSuspectIds.has(n.node_id)
+  ).length;
   const withoutPos = nodes.length - withPos;
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      <div style={{ position: "absolute", top: 10, left: 60, zIndex: 1000 }}>
+        <button
+          className={`isolate-toggle-btn ${isolateMode ? "active" : ""}`}
+          onClick={toggleIsolateMode}
+          title={isolateMode ? "Tocá nodos para prender sus conexiones" : "Mostrando todas las conexiones"}
+        >
+          {isolateMode ? "Elegir nodos" : "Conexiones: todas"}
+        </button>
+      </div>
       <div style={{
         position: "absolute", bottom: 30, left: 10, zIndex: 1000,
         background: "rgba(13,33,55,0.85)", color: "#607d8b",

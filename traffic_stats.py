@@ -314,38 +314,57 @@ def record_neighbors(reporter_id: str, neighbors: list):
     con.close()
 
 
-def has_any_neighbor_edge(node_id: str) -> bool:
-    """True si el nodo tiene al menos una fila en node_neighbors, como
-    reporter o como neighbor (es decir, ya tiene alguna arista en el grafo
-    por NeighborInfo o por un traceroute de relleno anterior)."""
+def _reachable_from(own_node_id: str) -> set:
+    """BFS sobre node_neighbors, tratando cada arista como no dirigida (si A
+    reportó a B como vecino, hay un enlace RF real entre los dos, lo haya
+    reportado B o no) -- devuelve el set de node_ids alcanzables desde el
+    nodo propio del BBS siguiendo esas aristas."""
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute(
-        "SELECT 1 FROM node_neighbors WHERE reporter = ? OR neighbor = ? LIMIT 1",
-        (node_id, node_id),
-    )
-    row = cur.fetchone()
+    cur.execute("SELECT reporter, neighbor FROM node_neighbors")
+    edges = cur.fetchall()
     con.close()
-    return row is not None
+
+    adjacency: dict = {}
+    for a, b in edges:
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+
+    reachable = {own_node_id}
+    pending = [own_node_id]
+    while pending:
+        current = pending.pop()
+        for neighbor in adjacency.get(current, ()):
+            if neighbor not in reachable:
+                reachable.add(neighbor)
+                pending.append(neighbor)
+    return reachable
 
 
-def get_orphan_nodes(active_within_seconds: int = 6 * 3600) -> list:
+def is_isolated_from_bbs(node_id: str, own_node_id: str) -> bool:
+    """True si no hay NINGÚN camino de aristas (directo o a través de otros
+    nodos) que conecte a node_id de vuelta al nodo propio del BBS -- incluye
+    tanto el caso de un nodo sin ninguna arista como el de una isla separada
+    del resto de la mesh (ej: A-B conectados entre sí pero sin ningún otro
+    borde hacia el resto)."""
+    return node_id not in _reachable_from(own_node_id)
+
+
+def get_isolated_nodes(own_node_id: str, active_within_seconds: int = 6 * 3600) -> list:
     """Nodos vistos dentro de la ventana (por defecto 6hs, igual que el corte
-    de visibilidad del mapa) que no tienen NINGUNA arista en node_neighbors
-    -- candidatos a un traceroute ocasional para completarles al menos una
-    conexión (ver _sweep_orphan_nodes en interface.py)."""
+    de visibilidad del mapa) que están aislados del BBS -- ver
+    is_isolated_from_bbs. Candidatos a un traceroute ocasional para
+    completarles una conexión de vuelta a la mesh (ver _sweep_orphan_nodes en
+    interface.py)."""
     cutoff = _now() - active_within_seconds
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute("""
-        SELECT node_id FROM node_stats
-        WHERE last_seen_ts >= ?
-          AND node_id NOT IN (SELECT reporter FROM node_neighbors)
-          AND node_id NOT IN (SELECT neighbor FROM node_neighbors)
-    """, (cutoff,))
-    rows = [r[0] for r in cur.fetchall()]
+    cur.execute("SELECT node_id FROM node_stats WHERE last_seen_ts >= ?", (cutoff,))
+    active_nodes = [r[0] for r in cur.fetchall()]
     con.close()
-    return rows
+
+    reachable = _reachable_from(own_node_id)
+    return [n for n in active_nodes if n not in reachable]
 
 
 def record_node_event(

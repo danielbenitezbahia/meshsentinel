@@ -185,7 +185,10 @@ export default function TrackView() {
 
       <main className="main">
         <div className="topbar topbar-toggle-only">
-          <button className="btn-sidebar-toggle" onClick={() => setSidebarOpen(o => !o)}>☰</button>
+          <button className="btn-sidebar-toggle" onClick={() => setSidebarOpen(o => !o)}>
+            ☰
+            {!sidebarOpen && trackNodes.length > 0 && <span className="sidebar-toggle-badge" />}
+          </button>
         </div>
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           <TrackMap tracks={tracks} />

@@ -17,7 +17,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { fetchGraph, setNodeAltitudeOverride } from "../api";
 import type { MeshNode, MeshEdge } from "../types";
-import { hashNodeColor, isRecentEnoughForMap } from "../mapVisuals";
+import { hashNodeColor, isRecentEnoughForMap, isHiddenFromMap, computeSuspectNodeIds, snrToColor } from "../mapVisuals";
 import { FloatingNodesLayer, type FloatingNode, type FloatingEdge } from "../mesh3dFloatingLayer";
 import { useFloatingTogglePosition } from "../useFloatingTogglePosition";
 
@@ -147,7 +147,7 @@ function buildFloatingEdges(
     if (isolateMode && !aPinned && !bPinned) continue;
 
     const snr = e.snr ?? e.snr_reverse;
-    const color = snr == null ? "#37474f" : snr >= 8 ? "#00e676" : snr >= 4 ? "#ffeb3b" : snr >= 0 ? "#ff9800" : "#f44336";
+    const color = snrToColor(snr);
 
     // Ancla = el nodo clickeado (prioriza "a"/reporter si ambos extremos
     // están prendidos). El texto siempre nombra al OTRO nodo. Fuera del modo
@@ -404,8 +404,10 @@ export default function Mesh3DView({ onSwitchTo2D }: { onSwitchTo2D: () => void 
     if (!map) return;
 
     const draw = () => {
+      const suspectIds = computeSuspectNodeIds(nodes, edges);
       const nodesWithPos = nodes.filter(
-        (n) => n.lat != null && n.lon != null && isRecentEnoughForMap(n.last_seen_mins_ago)
+        (n) => n.lat != null && n.lon != null && isRecentEnoughForMap(n.last_seen_mins_ago) &&
+          !isHiddenFromMap(n.short_name, n.long_name) && !suspectIds.has(n.node_id)
       );
 
       if (nodesWithPos.length > 0 && markersRef.current.size === 0) {
@@ -525,7 +527,9 @@ export default function Mesh3DView({ onSwitchTo2D }: { onSwitchTo2D: () => void 
     map.once("idle", idleHandler);
   }, [nodes, edges, altSource, selectedId, selectNode, openEditor, isolateMode, pinnedNodes]);
 
+  const sidebarSuspectIds = computeSuspectNodeIds(nodes, edges);
   const filtered = nodes.filter((n) => {
+    if (isHiddenFromMap(n.short_name, n.long_name) || sidebarSuspectIds.has(n.node_id)) return false;
     const q = search.toLowerCase();
     return (
       n.node_id.includes(q) ||

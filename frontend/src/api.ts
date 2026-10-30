@@ -1,4 +1,4 @@
-import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow, GameRow, MovingNode, ChannelUtilResponse } from "./types";
+import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow, GameRow, ChannelUtilResponse } from "./types";
 
 export const API_BASE = "";
 
@@ -145,11 +145,3 @@ export async function fetchChannelUtil(period: string, date?: string): Promise<C
   return res.json();
 }
 
-export async function fetchMovingNodes(): Promise<MovingNode[]> {
-  try {
-    const res = await fetch(`${API_BASE}/api/mesh/moving`);
-    if (!res.ok) return [];
-    const d = await res.json();
-    return d.nodes ?? [];
-  } catch { return []; }
-}

@@ -137,8 +137,9 @@ class WaypointDeleteTests(unittest.TestCase):
 
 class OrphanSweepTests(unittest.TestCase):
     """_sweep_orphan_nodes: encolar (con baja prioridad y cooldown) nodos
-    activos sin ninguna arista todavía, para un traceroute ocasional de
-    relleno. Ver traffic_stats.get_orphan_nodes para la query en sí."""
+    activos aislados del BBS -- sin ningún camino de aristas de vuelta, para
+    un traceroute ocasional de relleno. Ver traffic_stats.get_isolated_nodes
+    para la query en sí."""
 
     def setUp(self):
         self.iface = interface.Interface()
@@ -171,12 +172,22 @@ class OrphanSweepTests(unittest.TestCase):
         self.iface._sweep_orphan_nodes(time.time())
         self.assertIn(TEST_NODE_ID, self.iface._traceroute_queue)
 
-    def test_does_not_enqueue_node_with_existing_edge(self):
+    def test_does_not_enqueue_node_connected_to_bbs(self):
+        self._insert_node(TEST_NODE_ID)
+        traffic_stats.record_neighbors(self.iface._own_node_id, [{"node_id": TEST_NODE_ID, "snr": 5}])
+        self.iface._sweep_orphan_nodes(time.time())
+        self.assertNotIn(TEST_NODE_ID, self.iface._traceroute_queue)
+
+    def test_enqueues_both_nodes_of_an_island(self):
+        """Caso real: dos nodos conectados entre sí (ej. Cura Malal <->
+        ElArroyoMesh) pero sin ningún otro camino de vuelta al BBS -- los dos
+        siguen aislados y deben encolarse."""
         self._insert_node(TEST_NODE_ID)
         self._insert_node("!deadbeef")
         traffic_stats.record_neighbors(TEST_NODE_ID, [{"node_id": "!deadbeef", "snr": 5}])
         self.iface._sweep_orphan_nodes(time.time())
-        self.assertNotIn(TEST_NODE_ID, self.iface._traceroute_queue)
+        self.assertIn(TEST_NODE_ID, self.iface._traceroute_queue)
+        self.assertIn("!deadbeef", self.iface._traceroute_queue)
 
     def test_respects_cooldown(self):
         self._insert_node(TEST_NODE_ID)

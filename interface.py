@@ -433,14 +433,16 @@ class Interface:
                         path.append(sender)
                     # El grafo de la pestaña Mesh se arma principalmente con
                     # vecinos escuchados pasivamente por NEIGHBORINFO_APP. Pero
-                    # un nodo relay que nunca lo habilita queda sin ninguna
-                    # arista aunque esté activo -- para ESE caso puntual (ver
-                    # _sweep_orphan_nodes), si quien respondió sigue sin
-                    # ninguna arista propia, se completa una con su relay
-                    # inmediato acá. Nunca pisa datos de NeighborInfo: si ya
-                    # tiene al menos una arista (de cualquier origen), no se
-                    # toca.
-                    if len(path) >= 2 and not traffic_stats.has_any_neighbor_edge(sender):
+                    # un nodo relay que nunca lo habilita (o que forma una isla
+                    # con otro nodo igual de aislado, ej. Cura Malal con una
+                    # sola arista a ElArroyoMesh y ninguna otra conexión de
+                    # vuelta al BBS) queda sin camino de aristas hasta acá --
+                    # para ESE caso (ver _sweep_orphan_nodes), si quien
+                    # respondió sigue aislado del BBS, se completa una arista
+                    # con su relay inmediato. Nunca pisa datos de NeighborInfo:
+                    # si ya hay camino de vuelta al BBS (por cualquier origen),
+                    # no se toca.
+                    if len(path) >= 2 and traffic_stats.is_isolated_from_bbs(sender, self._own_node_id):
                         traffic_stats.record_neighbors(path[-2], [{"node_id": sender, "snr": None}])
                     # Store full path for web display
                     traffic_stats.record_traceroute_path(sender, path)
@@ -1254,14 +1256,19 @@ class Interface:
 
     def _sweep_orphan_nodes(self, now: float):
         """Nodos activos (vistos hace <6hs, igual que el corte de visibilidad
-        del mapa) sin ninguna arista en node_neighbors -- típicamente nodos
-        relay/infraestructura que nunca habilitaron NEIGHBORINFO_APP. Se
-        encolan con baja prioridad (al final, no al frente) para un
+        del mapa) aislados del BBS: sin ningún camino de aristas de vuelta,
+        ya sea porque no tienen ninguna, o porque forman una isla separada
+        del resto de la mesh (ej. Cura Malal con una sola arista a
+        ElArroyoMesh y ninguna otra conexión hacia el BBS) -- típicamente
+        nodos relay/infraestructura que nunca habilitaron NEIGHBORINFO_APP.
+        Se encolan con baja prioridad (al final, no al frente) para un
         traceroute ocasional; quien realmente graba la arista -- solo si el
-        nodo sigue sin ninguna -- es el handler de TRACEROUTE_APP en
+        nodo sigue aislado -- es el handler de TRACEROUTE_APP en
         on_receive()."""
+        if not self._own_node_id:
+            return
         try:
-            orphans = traffic_stats.get_orphan_nodes()
+            orphans = traffic_stats.get_isolated_nodes(self._own_node_id)
         except Exception:
             logger.exception("orphan sweep: failed to query candidates")
             return

@@ -10,6 +10,7 @@ import StatsView from "./components/StatsView";
 import MeshWarsView from "./components/MeshWarsView";
 import ActivityView from "./components/ActivityView";
 import { useFloatingTogglePosition } from "./useFloatingTogglePosition";
+import { isHiddenFromMap, computeSuspectNodeIds } from "./mapVisuals";
 import "./App.css";
 
 // MapLibre GL pesa bastante (WebGL) — carga diferida para no inflar el
@@ -59,7 +60,9 @@ function MeshView({ onSwitchTo3D }: { onSwitchTo3D: () => void }) {
 
   useEffect(() => { loadGraph(); }, [loadGraph]);
 
+  const suspectIds = computeSuspectNodeIds(nodes, edges);
   const filtered = nodes.filter((n) => {
+    if (isHiddenFromMap(n.short_name, n.long_name) || suspectIds.has(n.node_id)) return false;
     const q = search.toLowerCase();
     return (
       n.node_id.includes(q) ||

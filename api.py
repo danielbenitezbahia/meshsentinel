@@ -1246,44 +1246,6 @@ def admin_games():
     return jsonify({"rows": rows})
 
 
-@app.get("/api/mesh/moving")
-def get_moving_nodes():
-    """Nodes with >= 2 GPS track points today and a track within the last 30 minutes."""
-    now = int(time.time())
-    since_today = now - 86400
-    cutoff = now - 1800
-
-    moving = _q("""
-        SELECT node_id, COUNT(*) AS pts, MAX(ts) AS last_ts
-        FROM node_track
-        WHERE ts >= ?
-        GROUP BY node_id
-        HAVING pts >= 2 AND last_ts >= ?
-    """, (since_today, cutoff))
-
-    if not moving:
-        return jsonify({"nodes": []})
-
-    result = []
-    for m in moving:
-        nid = m["node_id"]
-        pts = _q("SELECT lat, lon FROM node_track WHERE node_id = ? ORDER BY ts DESC LIMIT 1", (nid,))
-        if not pts or pts[0]["lat"] is None or pts[0]["lon"] is None:
-            continue
-        info = _q("SELECT short_name, long_name FROM node_stats WHERE node_id = ?", (nid,))
-        ni = info[0] if info else {}
-        result.append({
-            "node_id":    nid,
-            "short_name": ni.get("short_name"),
-            "long_name":  ni.get("long_name"),
-            "lat":        pts[0]["lat"],
-            "lon":        pts[0]["lon"],
-            "last_ts":    m["last_ts"],
-        })
-
-    return jsonify({"nodes": result})
-
-
 @app.get("/")
 def serve_index():
     _log_visit()
@@ -1324,4 +1286,9 @@ def not_found(e):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    # Solo loopback: cloudflared es la única puerta de entrada real (le pega
+    # local). Con 0.0.0.0 cualquiera en la LAN -- o desde afuera si hay
+    # port-forwarding en el router -- se saltea todas las reglas de bloqueo
+    # de bots configuradas en Cloudflare, que solo aplican al tráfico que
+    # pasa por el proxy.
+    app.run(host="127.0.0.1", port=8080, debug=False)

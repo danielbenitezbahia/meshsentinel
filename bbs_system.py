@@ -94,10 +94,10 @@ _SENTINEL_LOG_SLOTS = [
      "📟 Sentinel BBS: Escape Room 🚪 y ZORK 🗺 100% en castellano, y nuevo: Escape Room Criollo 🏚, "
      "con onda meshtástica. DM al nodo Sentinel BBS → 🎮 Juegos."),
     ((2026, 10, 23, 20),
-     "📬 Nuevo: Mensaje Diferido. Dejale un mensaje a cualquier nodo aunque no esté en rango — el BBS "
+     "📬 Nuevo: Mensaje Diferido. Dejale un mensaje a cualquier nodo aunque no esté en rango. El BBS "
      "lo guarda y te avisa cuando lo entrega. Comando: tell !nodeId tu mensaje"),
     ((2026, 10, 23, 20),
-     "⚡ Nuevo en el menú: Cortes Programados EDES — lista los cortes de luz programados por localidad, "
+     "⚡ Nuevo en el menú: Cortes Programados EDES. Lista los cortes de luz programados por localidad, "
      "directo desde el BBS."),
     ((2026, 10, 23, 20),
      "⚠️ Alertas Vigentes SMN ahora también cubre el partido de Saavedra. Mirá los avisos por localidad "
@@ -418,7 +418,7 @@ class BBSSystem:
             lines = ["Envíos programados pendientes:"]
             for qid, message, display, _created_by in rows:
                 preview = message if len(message) <= 40 else message[:37] + "..."
-                lines.append(f"#{qid} {display} — {preview}")
+                lines.append(f"#{qid} {display}: {preview}")
             return "\n".join(lines)
 
         if msg.lower().startswith("cancelar "):
