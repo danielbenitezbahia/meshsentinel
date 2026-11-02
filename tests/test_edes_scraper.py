@@ -59,6 +59,75 @@ class TestParseRealFixture(unittest.TestCase):
         self.assertIn("Berutti", rows[1]["streets"])
 
 
+class TestParseFormatoNuevo(unittest.TestCase):
+    """EDES cambió de formato sin aviso entre el 2026-10-30 y el 2026-11-02
+    (encontrado al investigar por qué dejaron de verse cortes nuevos: el
+    scraper corría bien, pero parse() devolvía 0 filas desde ese cambio).
+    HTML real bajado el 2026-11-02 (ver LAPRIDA/GUAMINI más abajo), con
+    tres diferencias respecto al formato viejo: <b> en vez de <strong>, el
+    <br/> ahora va DENTRO de esa etiqueta, y la frase después del horario
+    varía ("afecta a la zona de X") o directamente no está."""
+
+    def test_b_en_vez_de_strong_con_br_adentro(self):
+        html = """
+        <p><b>Lunes 2 de noviembre</b></p>
+        <ul>
+        <li><b>LAPRIDA<br /></b>&#8211; de 8 a 11hs, afecta a la zona de Las Hermanas</li>
+        <li><b>GUAMINI<br /></b>&#8211; de 9 a 14hs</li>
+        </ul>
+        """
+        rows = edes_scraper.parse(html, reference=date(2026, 11, 2))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["locality"], "LAPRIDA")
+        self.assertEqual(rows[0]["streets"], "Las Hermanas")
+        self.assertEqual((rows[0]["time_start"], rows[0]["time_end"]), ("08:00", "11:00"))
+
+    def test_sin_frase_de_calles_igual_guarda_la_fila(self):
+        # GUAMINI del caso real: ningún texto después del horario. Antes
+        # del fix esta fila se perdía entera (SEGMENT_RE exigía la frase
+        # "afecta al cuadrante..."); ahora horario+localidad alcanza.
+        html = """
+        <p><b>Lunes 2 de noviembre</b></p>
+        <ul><li><b>GUAMINI<br /></b>&#8211; de 9 a 14hs</li></ul>
+        """
+        rows = edes_scraper.parse(html, reference=date(2026, 11, 2))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["locality"], "GUAMINI")
+        self.assertEqual(rows[0]["streets"], "")
+
+    def test_afecta_a_la_zona_de_se_limpia_igual_que_cuadrante(self):
+        html = """
+        <p><b>Lunes 2 de noviembre</b></p>
+        <ul><li><b>LAPRIDA</b>&#8211; de 8 a 11hs, afecta a la zona de Las Hermanas</li></ul>
+        """
+        rows = edes_scraper.parse(html, reference=date(2026, 11, 2))
+        self.assertEqual(rows[0]["streets"], "Las Hermanas")
+        self.assertNotIn("afecta", rows[0]["streets"].lower())
+
+    def test_formato_viejo_strong_sigue_funcionando(self):
+        # El fix no debe romper el formato anterior si EDES vuelve a él,
+        # o lo mezcla con <b> en distintas localidades del mismo día.
+        html = """
+        <p><b>Jueves 22 de octubre</b></p>
+        <ul><li><strong>BAHIA BLANCA</strong><br>– de 9 a 13hs, afecta al cuadrante comprendido por las calles: Mitre.</li></ul>
+        """
+        rows = edes_scraper.parse(html, reference=date(2026, 10, 22))
+        self.assertEqual(rows[0]["locality"], "BAHIA BLANCA")
+        self.assertEqual(rows[0]["streets"], "Mitre.")
+
+    def test_mezcla_strong_y_b_el_mismo_dia(self):
+        html = """
+        <p><b>Lunes 2 de noviembre</b></p>
+        <ul>
+        <li><strong>BAHIA BLANCA</strong><br>– de 9 a 13hs, afecta al cuadrante comprendido por las calles: Mitre.</li>
+        <li><b>LAPRIDA<br /></b>– de 8 a 11hs, afecta a la zona de Las Hermanas</li>
+        </ul>
+        """
+        rows = edes_scraper.parse(html, reference=date(2026, 11, 2))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({r["locality"] for r in rows}, {"BAHIA BLANCA", "LAPRIDA"})
+
+
 class TestParseSintetico(unittest.TestCase):
     def test_sin_cortes_programados_devuelve_lista_vacia(self):
         html = "<html><body><p>No hay obras programadas por el momento.</p></body></html>"
@@ -169,6 +238,94 @@ class TestStorageRoundtrip(unittest.TestCase):
     def test_store_scrape_vacio_no_rompe(self):
         edes_scraper.store_scrape([], scraped_at=1000)
         self.assertEqual(edes_scraper.get_latest_outages(), [])
+
+
+class TestScraperHealth(unittest.TestCase):
+    """get_scraper_health(): la señal para distinguir 'no hay nada
+    programado' (day_blocks_found=0) de 'probablemente se rompió el
+    parseo' (day_blocks_found>0 pero rows_found=0, varias veces seguidas)."""
+
+    def setUp(self):
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        self._tmp.close()
+        self._orig_path = edes_scraper.DB_PATH
+        edes_scraper.DB_PATH = self._tmp.name
+        edes_scraper.init_db()
+
+    def tearDown(self):
+        edes_scraper.DB_PATH = self._orig_path
+        if os.path.exists(self._tmp.name):
+            os.unlink(self._tmp.name)
+
+    def test_sin_corridas_todavia(self):
+        health = edes_scraper.get_scraper_health()
+        self.assertIsNone(health["last_run_ts"])
+        self.assertFalse(health["looks_broken"])
+
+    def test_corridas_normales_sin_cortes_no_se_marcan_rotas(self):
+        # Día real sin nada programado: la página ni pone el encabezado.
+        for _ in range(5):
+            edes_scraper._log_scrape_attempt(ok=True, day_blocks_found=0, rows_found=0, error=None)
+        health = edes_scraper.get_scraper_health()
+        self.assertFalse(health["looks_broken"])
+
+    def test_corridas_con_cortes_no_se_marcan_rotas(self):
+        for _ in range(5):
+            edes_scraper._log_scrape_attempt(ok=True, day_blocks_found=1, rows_found=2, error=None)
+        health = edes_scraper.get_scraper_health()
+        self.assertFalse(health["looks_broken"])
+        self.assertEqual(health["last_rows_found"], 2)
+
+    def test_encabezados_sin_filas_varias_veces_se_marca_rota(self):
+        # El caso real: la página sigue publicando el día, pero el <li>
+        # interno cambió y no se extrae nada de adentro.
+        for _ in range(3):
+            edes_scraper._log_scrape_attempt(ok=True, day_blocks_found=1, rows_found=0, error=None)
+        health = edes_scraper.get_scraper_health()
+        self.assertTrue(health["looks_broken"])
+
+    def test_una_sola_corrida_vacia_no_alcanza_para_marcar_rota(self):
+        # Evita falsos positivos por un glitch de red puntual.
+        edes_scraper._log_scrape_attempt(ok=True, day_blocks_found=1, rows_found=0, error=None)
+        health = edes_scraper.get_scraper_health()
+        self.assertFalse(health["looks_broken"])
+
+    def test_una_corrida_reciente_con_filas_saca_la_marca_de_rota(self):
+        for _ in range(4):
+            edes_scraper._log_scrape_attempt(ok=True, day_blocks_found=1, rows_found=0, error=None)
+        edes_scraper._log_scrape_attempt(ok=True, day_blocks_found=1, rows_found=3, error=None)
+        health = edes_scraper.get_scraper_health()
+        self.assertFalse(health["looks_broken"])
+
+    def test_run_registra_fetch_fallido_y_relanza(self):
+        orig_fetch = edes_scraper.fetch_html
+        edes_scraper.fetch_html = lambda: (_ for _ in ()).throw(RuntimeError("network down"))
+        try:
+            with self.assertRaises(RuntimeError):
+                edes_scraper.run()
+        finally:
+            edes_scraper.fetch_html = orig_fetch
+        health = edes_scraper.get_scraper_health()
+        self.assertFalse(health["last_run_ok"])
+        self.assertIn("network down", health["last_error"])
+
+    def test_run_exitoso_registra_day_blocks_y_rows(self):
+        html = """
+        <p><b>Lunes 2 de noviembre</b></p>
+        <ul><li><b>GUAMINI<br /></b>&#8211; de 9 a 14hs</li></ul>
+        """
+        orig_fetch = edes_scraper.fetch_html
+        edes_scraper.fetch_html = lambda: html
+        try:
+            count = edes_scraper.run()
+        finally:
+            edes_scraper.fetch_html = orig_fetch
+        self.assertEqual(count, 1)
+        health = edes_scraper.get_scraper_health()
+        self.assertTrue(health["last_run_ok"])
+        self.assertEqual(health["last_day_blocks_found"], 1)
+        self.assertEqual(health["last_rows_found"], 1)
+        self.assertFalse(health["looks_broken"])
 
 
 if __name__ == "__main__":

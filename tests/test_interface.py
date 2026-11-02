@@ -210,5 +210,80 @@ class OrphanSweepTests(unittest.TestCase):
         self.assertNotIn(self.iface._own_node_id, self.iface._traceroute_queue)
 
 
+class RoleSweepTests(unittest.TestCase):
+    """_sweep_node_roles: vuelca a node_stats.role el rol de cada nodo del
+    NodeDB que el SDK ya tiene cacheado en self.interface.nodes."""
+
+    def setUp(self):
+        self.iface = interface.Interface()
+        self.iface.interface = MagicMock()
+
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        self._tmp.close()
+        self._orig_db_path = traffic_stats.DB_PATH
+        traffic_stats.DB_PATH = self._tmp.name
+        traffic_stats.init_db()
+
+    def tearDown(self):
+        traffic_stats.DB_PATH = self._orig_db_path
+        if os.path.exists(self._tmp.name):
+            os.unlink(self._tmp.name)
+
+    def _role_of(self, node_id):
+        con = sqlite3.connect(traffic_stats.DB_PATH)
+        row = con.execute(
+            "SELECT role FROM node_stats WHERE node_id = ?", (node_id,)
+        ).fetchone()
+        con.close()
+        return row[0] if row else None
+
+    def test_captures_non_default_role(self):
+        self.iface.interface.nodes = {
+            TEST_NODE_ID: {"user": {"role": "ROUTER"}},
+        }
+        self.iface._sweep_node_roles(time.time())
+        self.assertEqual(self._role_of(TEST_NODE_ID), "ROUTER")
+
+    def test_missing_role_key_defaults_to_client(self):
+        """El protobuf (MessageToDict) omite la clave 'role' cuando vale el
+        default (CLIENT=0) -- la ausencia de la clave ES el nodo CLIENT, no
+        un nodo sin rol."""
+        self.iface.interface.nodes = {
+            TEST_NODE_ID: {"user": {"shortName": "TST"}},
+        }
+        self.iface._sweep_node_roles(time.time())
+        self.assertEqual(self._role_of(TEST_NODE_ID), "CLIENT")
+
+    def test_normalizes_node_id_case(self):
+        self.iface.interface.nodes = {
+            "!33695E54": {"user": {"role": "CLIENT_MUTE"}},
+        }
+        self.iface._sweep_node_roles(time.time())
+        self.assertEqual(self._role_of(TEST_NODE_ID), "CLIENT_MUTE")
+
+    def test_skips_entries_without_user_dict(self):
+        self.iface.interface.nodes = {
+            TEST_NODE_ID: {"shortName": "TST"},  # sin "user"
+            "!deadbeef": "not a dict",
+        }
+        self.iface._sweep_node_roles(time.time())  # no debe lanzar
+        self.assertIsNone(self._role_of(TEST_NODE_ID))
+
+    def test_updates_role_without_clobbering_other_fields(self):
+        traffic_stats.update_node_hop_info(TEST_NODE_ID, hops_from_bbs=3, snr_from_bbs=5.5)
+        self.iface.interface.nodes = {
+            TEST_NODE_ID: {"user": {"role": "REPEATER"}},
+        }
+        self.iface._sweep_node_roles(time.time())
+
+        con = sqlite3.connect(traffic_stats.DB_PATH)
+        row = con.execute(
+            "SELECT role, hops_from_bbs, snr_from_bbs FROM node_stats WHERE node_id = ?",
+            (TEST_NODE_ID,),
+        ).fetchone()
+        con.close()
+        self.assertEqual(row, ("REPEATER", 3, 5.5))
+
+
 if __name__ == "__main__":
     unittest.main()

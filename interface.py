@@ -46,6 +46,7 @@ class Interface:
         self._pending_new_node_notify: dict = {}  # node_id → datos del aviso en espera del traceroute
         self._traceroute_tick_last = 0
         self._orphan_sweep_last = 0
+        self._role_sweep_last = 0
         self._orphan_traceroute_last: dict = {}  # node_id → último traceroute de relleno (cooldown)
         self._recent_channel_msg_ids: dict = {}   # packet_id → ts, para no reprocesar duplicados de mesh
 
@@ -540,9 +541,20 @@ class Interface:
             # Ignorar canal/broadcast (salvo que haya un callback interesado)
             if is_broadcast:
                 logger.info(f"Ignoring channel message from {sender}: {text}")
-                if self.on_channel_message and sender and not self._is_duplicate_packet(packet.get("id")):
+                channel_idx = packet.get("channel", 0) or 0
+                is_dup = self._is_duplicate_packet(packet.get("id"))
+
+                # Canal público (MediumFast) -- se guarda el texto para el feed
+                # "en vivo" de la pestaña Alertas. Tráfico sin cifrar, visible
+                # para cualquier nodo en rango.
+                if channel_idx == 0 and sender and text and not is_dup:
                     try:
-                        channel_idx = packet.get("channel", 0) or 0
+                        traffic_stats.record_public_message(sender, short_name, long_name, text)
+                    except Exception:
+                        logger.exception("record_public_message failed for %s", sender)
+
+                if self.on_channel_message and sender and not is_dup:
+                    try:
                         response = self.on_channel_message(sender, text, channel_idx)
                         if response:
                             self.send_channel_message(response, channel_index=channel_idx)
@@ -1206,6 +1218,7 @@ class Interface:
     NEW_NODE_NOTIFY_TIMEOUT = 45     # seg máx de espera por el traceroute antes de avisar sin ruta
     ORPHAN_SWEEP_INTERVAL = 300        # cada 5 min se revisa si hay nodos sin ninguna arista
     ORPHAN_TRACEROUTE_COOLDOWN = 4 * 3600  # no re-intentar el mismo nodo antes de esto
+    ROLE_SWEEP_INTERVAL = 600  # cada 10 min se vuelca el rol de cada nodo del NodeDB cacheado
 
     def _label_for_node(self, node_id: str) -> str:
         """Nombre corto para mostrar un nodo en una ruta (short_name > long_name > ID)."""
@@ -1283,6 +1296,32 @@ class Interface:
             self._traceroute_queue.append(node_id)
             self._orphan_traceroute_last[node_id] = now
             logger.info("orphan node %s enqueued for gap-filling traceroute", node_id)
+
+    def _sweep_node_roles(self, now: float):
+        """Vuelca el rol (device.role) de cada nodo conocido al node_stats.
+
+        El SDK ya mantiene en self.interface.nodes un NodeDB sincronizado con
+        el device propio, que acumula el NodeInfo de todo nodo visto alguna
+        vez en la mesh (no solo los escuchados directo) -- así que no hace
+        falta esperar a interceptar un NODEINFO_APP en vivo de cada uno, un
+        barrido periódico de ese cache ya alcanza. Ausencia de la clave
+        'role' en el dict significa CLIENT: MessageToDict (protobuf) omite
+        los campos enum en su valor 0/default, y CLIENT es ese default."""
+        try:
+            nodes = getattr(self.interface, "nodes", {}) or {}
+        except Exception:
+            return
+        for node_id, info in nodes.items():
+            if not isinstance(info, dict):
+                continue
+            user = info.get("user")  # None (sin NodeInfo todavía) != {} (NodeInfo sin 'role' == CLIENT)
+            if not isinstance(user, dict):
+                continue
+            role = user.get("role") or "CLIENT"
+            try:
+                traffic_stats.update_node_role(node_id.lower(), role)
+            except Exception:
+                logger.exception("role sweep: failed to update %s", node_id)
 
     def _send_traceroute(self, node_id: str):
         """Envía un traceroute sin bloquear el loop principal.
@@ -1399,6 +1438,13 @@ class Interface:
                         self._tick_traceroute(now)
                     except Exception:
                         logger.exception("_tick_traceroute() failed")
+
+                if now - self._role_sweep_last >= self.ROLE_SWEEP_INTERVAL:
+                    self._role_sweep_last = now
+                    try:
+                        self._sweep_node_roles(now)
+                    except Exception:
+                        logger.exception("_sweep_node_roles() failed")
 
                 if self.on_tick and (now - last_tick) >= 1.0:
                     logger.info(

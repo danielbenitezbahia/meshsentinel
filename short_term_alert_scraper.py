@@ -1,5 +1,8 @@
+import json
+import os
 import re
 import sqlite3
+import time
 from datetime import datetime
 from urllib.request import urlopen
 import xml.etree.ElementTree as ET
@@ -7,6 +10,11 @@ from typing import List, Dict, Tuple
 
 FEED_URL = "https://ssl.smn.gob.ar/feeds/avisocorto_GeoRSS.xml"
 DB_PATH = "weather_alerts.sqlite"
+
+# Cache de los avisos vigentes que matchean el SW (despachados o no), para
+# que la pestaña Alertas de la webapp los lea sin pegarle al feed de SMN en
+# cada carga -- eso fue justamente lo que nos rate-limitió una vez.
+CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "short_term_alerts_cache.json")
 
 NS = {
     "dc":     "http://purl.org/dc/elements/1.1/",
@@ -125,3 +133,36 @@ def fetch_new_items() -> List[Dict]:
     """
     feed_xml = fetch_xml(FEED_URL)
     return parse_feed(feed_xml)
+
+
+def save_current_items(items: List[Dict]) -> None:
+    """Pisa el cache con los items vigentes (ya con affected_partidos
+    calculado por el llamador). El polygon no se guarda, no hace falta
+    para mostrarlo en la webapp."""
+    data = {
+        "updated_at": int(time.time()),
+        "items": [
+            {
+                "dc_date":           it.get("dc_date", ""),
+                "title":             it.get("title", ""),
+                "phenomenon":        it.get("phenomenon", ""),
+                "description_clean": it.get("description_clean", ""),
+                "affected_partidos": it.get("affected_partidos", []),
+            }
+            for it in items
+        ],
+    }
+    with open(CACHE_PATH, "w") as f:
+        json.dump(data, f)
+
+
+def get_current_items() -> Dict:
+    """Devuelve {'updated_at': ts, 'items': [...]} del cache, o
+    {'updated_at': None, 'items': []} si todavía no se guardó nada."""
+    if not os.path.exists(CACHE_PATH):
+        return {"updated_at": None, "items": []}
+    try:
+        with open(CACHE_PATH, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {"updated_at": None, "items": []}

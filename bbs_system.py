@@ -21,6 +21,7 @@ import short_term_alert_scraper
 import traffic_stats
 import firms_notifier
 import firms_service
+import tropocast_service
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,9 @@ SYNC_NODE_ENV_INTERVAL_SECONDS = 60  # backstop: volcar environment_metrics desd
 EDES_SCRAPER_INTERVAL_SECONDS = 30 * 60  # corre cada 30 min, sin limite de una vez por dia
 FIRMS_POLL_INTERVAL_SECONDS = 10 * 60
 FIRMS_DELIVERY_INTERVAL_SECONDS = 60
-PARTIDO_ORDER = ["Bahia Blanca", "Monte Hermoso", "Coronel Dorrego", "Tornquist"]
+TROPOCAST_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60  # el modelo GDPS se publica cada 12hs, 6hs es margen de sobra
+# PARTIDO_ORDER vive en weather_alert_service.py (se movió junto con el
+# resto del formato de alertas compartido con la webapp).
 SMN_BETWEEN_PARTIDOS_DELAY = 10  # segundos entre mensaje y mensaje
 NEW_NODE_NOTIFY_NODES = ["!da4846ec", "!33686e48"]  # pilgrim, daniel movil
 
@@ -143,6 +146,7 @@ class BBSSystem:
         weather_alert_notifier.init_db()
         traffic_stats.init_db()
         self.firms_service = firms_service.FirmsService()
+        self.tropocast_service = tropocast_service.TropocastService()
 
         self._last_delivery = 0
         self._last_scheduled_broadcast_delivery = 0
@@ -155,6 +159,7 @@ class BBSSystem:
         self._last_firms_poll = 0
         self._last_firms_delivery = 0
         self._last_firms_cleanup = 0
+        self._last_tropocast_run = 0
         self._last_cleanup_run = 0
         self._brandsen_weather = traffic_stats.load_brandsen_weather()
         self._last_brandsen_weather_refresh = 0
@@ -255,6 +260,10 @@ class BBSSystem:
                 self._last_short_term_run = now
                 self.check_short_term_alerts()
 
+            if (now - self._last_tropocast_run) >= TROPOCAST_REFRESH_INTERVAL_SECONDS:
+                self._last_tropocast_run = now
+                self.refresh_tropocast()
+
             self.refresh_brandsen_weather_if_needed()
 
             # Cleanup diario: elimina series temporales > 30 días
@@ -270,6 +279,11 @@ class BBSSystem:
                     logger.info("Cleanup diario FIRMS completado: %s", cleanup)
                 except Exception as exc:
                     logger.warning("Error en cleanup diario FIRMS: %s", exc)
+                try:
+                    deleted = self.tropocast_service.prune_old_data()
+                    logger.info("Cleanup diario Tropocast completado: %s registros", deleted)
+                except Exception as exc:
+                    logger.warning("Error en cleanup diario Tropocast: %s", exc)
 
         self.interface.on_tick = tick
 
@@ -614,6 +628,7 @@ class BBSSystem:
         "Mensaje Diferido": "📬",
         "Alertas Vigentes SMN": "⚠️",
         "EDES Cortes Programados": "⚡",
+        "Pronóstico Troposférico": "📡",
     }
     SUBMODULE_ICONS = {
         "Estado de Red":    "🔍",
@@ -968,6 +983,19 @@ class BBSSystem:
         except Exception as exc:
             logger.exception("Error delivering FIRMS outbox: %s", exc)
 
+    def refresh_tropocast(self):
+        """Actualiza el pronóstico troposférico (Tropocast) cada
+        TROPOCAST_REFRESH_INTERVAL_SECONDS (6hs). Nunca manda nada por LoRa
+        acá -- solo guarda datos para que el menú los lea bajo demanda."""
+        if not self.tropocast_service.enabled:
+            logger.debug("Tropocast disabled: TROPOCAST_API_KEY is not configured")
+            return
+        try:
+            result = self.tropocast_service.refresh()
+            logger.info("Tropocast refresh completo: %s", result)
+        except Exception as exc:
+            logger.exception("Error actualizando Tropocast: %s", exc)
+
     def deliver_weather_alerts(self):
         try:
             sent = weather_alert_notifier.process_all_subscribed_nodes(self.interface)
@@ -1029,143 +1057,24 @@ class BBSSystem:
         print("BBS System running...")
         self.interface.run()
 
-    def severity_to_color(self, severity: str) -> str:
-        mapping = {
-            "Moderate": "🟡",
-            "Severe":   "🟠",
-            "Extreme":  "🔴",
-        }
-        return mapping.get((severity or "").strip(), "⚪")
-
-    def alert_icon(self, title: str) -> str:
-        t = (title or "").lower()
-        if "torment" in t:
-            return "⛈"
-        if "viento" in t:
-            return "💨"
-        if "lluv" in t:
-            return "🌧"
-        if "nieve" in t:
-            return "🌨"
-        if "niebla" in t:
-            return "🌫"
-        return "⚠"
-
-    def day_abbr_es(self, dt: datetime) -> str:
-        days = {
-            0: "lunes",
-            1: "martes",
-            2: "miércoles",
-            3: "jueves",
-            4: "viernes",
-            5: "sábado",
-            6: "domingo",
-        }
-        return days[dt.weekday()]
-
-    def moment_of_day_es(self, dt: datetime) -> str:
-        h = dt.hour
-        if 0 <= h < 6:
-            return "madrugada"
-        if 6 <= h < 12:
-            return "mañana"
-        if 12 <= h < 18:
-            return "tarde"
-        return "noche"
-
-    def format_alert_window_es(self, onset_str: str, expires_str: str) -> str:
-        try:
-            onset_dt = datetime.fromisoformat(onset_str)
-            expires_dt = datetime.fromisoformat(expires_str)
-        except Exception:
-            return "vigente"
-
-        day1 = self.day_abbr_es(onset_dt)
-        day2 = self.day_abbr_es(expires_dt)
-        part1 = self.moment_of_day_es(onset_dt)
-        part2 = self.moment_of_day_es(expires_dt)
-
-        if day1 == day2 and part1 == part2:
-            return f"{day1} {part1}"
-        if day1 == day2:
-            return f"{day1} {part1}/{part2}"
-        return f"{day1} {part1} → {day2} {part2}"
-
-    def _merge_partido_alerts(self, alerts: list) -> list:
-        """Elimina duplicados exactos y fusiona ventanas contiguas (gap ≤ 3h) del mismo título+severidad."""
-        from datetime import timedelta
-
-        def parse_dt(s):
-            try:
-                return datetime.fromisoformat(s) if s else None
-            except Exception:
-                return None
-
-        GAP_TOLERANCE = timedelta(hours=3)
-        SEV_ORDER = {"Extreme": 0, "Severe": 1, "Moderate": 2, "": 3}
-
-        groups = {}
-        for alert in alerts:
-            key = (
-                (alert.get("title") or "").strip().upper(),
-                (alert.get("severity") or "").strip(),
-            )
-            groups.setdefault(key, []).append(alert)
-
-        merged = []
-        for group in groups.values():
-            # Paso 1: eliminar duplicados exactos por (onset, expires)
-            seen_windows = set()
-            deduped = []
-            for a in group:
-                w = (a.get("onset") or "", a.get("expires") or "")
-                if w not in seen_windows:
-                    seen_windows.add(w)
-                    deduped.append(a)
-
-            # Paso 2: ordenar por onset como string (ISO ordena bien lexicográficamente)
-            sorted_group = sorted(deduped, key=lambda a: a.get("onset") or "")
-
-            current = dict(sorted_group[0])
-            for nxt in sorted_group[1:]:
-                current_expires = parse_dt(current.get("expires"))
-                nxt_onset       = parse_dt(nxt.get("onset"))
-                nxt_expires     = parse_dt(nxt.get("expires"))
-                if current_expires and nxt_onset and (nxt_onset - current_expires) <= GAP_TOLERANCE:
-                    if nxt_expires and nxt_expires > current_expires:
-                        current["expires"] = nxt["expires"]
-                else:
-                    merged.append(current)
-                    current = dict(nxt)
-            merged.append(current)
-
-        merged.sort(key=lambda a: (SEV_ORDER.get(a.get("severity") or "", 3), a.get("onset") or ""))
-        return merged
+    # severity_to_color, alert_icon, day_abbr_es, moment_of_day_es,
+    # format_alert_window_es y _merge_partido_alerts se movieron a
+    # weather_alert_service.py (no usaban self para nada) para que la
+    # pestaña Alertas de la webapp pueda mostrar las alertas agrupadas con
+    # el mismo color/ícono/orden que este resumen, sin reimplementar la
+    # lógica en TypeScript. Quedan referenciadas como
+    # weather_alert_service.X en los métodos de abajo.
 
     def build_smn_messages_by_partido(self, hour: int = None) -> list:
         if hour is None:
             hour = datetime.now().hour
 
-        alerts = weather_alert_service.get_sudoeste_ba_alerts()
-
-        by_partido: dict = {}
-        for alert in alerts:
-            for partido in (alert.get("affected_partidos") or []):
-                by_partido.setdefault(partido, []).append(alert)
-
-        all_partidos = list(weather_alert_service.TARGET_PARTIDOS.values())
-        rest = sorted(p for p in all_partidos if p not in PARTIDO_ORDER)
-        ordered = PARTIDO_ORDER + rest
+        grouped = weather_alert_service.get_grouped_alerts()
 
         messages = []
         header_added = False
 
-        for partido in ordered:
-            partido_alerts = self._merge_partido_alerts(by_partido.get(partido, []))
-
-            if not partido_alerts:
-                continue
-
+        for entry in grouped:
             lines = []
 
             if not header_added:
@@ -1176,16 +1085,13 @@ class BBSSystem:
                 ]
                 header_added = True
 
-            lines.append(f"📍 {partido.upper()}")
+            lines.append(f"📍 {entry['partido'].upper()}")
 
-            for alert in partido_alerts:
-                icon = self.alert_icon(alert["title"])
-                sev = self.severity_to_color(alert["severity"])
-                when_txt = self.format_alert_window_es(alert["onset"], alert["expires"])
+            for alert in entry["alerts"]:
                 lines += [
                     "· · · · · · · · · ·",
-                    f"{sev}{icon} {alert['title'].upper()}",
-                    f"🕐 {when_txt}",
+                    f"{alert['severity_color']}{alert['icon']} {alert['title'].upper()}",
+                    f"🕐 {alert['window_text']}",
                 ]
 
             messages.append("\n".join(lines))
@@ -1303,11 +1209,11 @@ class BBSSystem:
         phenomenon = alert.get("phenomenon", "ALERTA METEOROLOGICA").upper()
         affected   = alert.get("affected_partidos", [])
 
-        priority_affected = [p for p in PARTIDO_ORDER if p in affected]
-        rest_affected     = sorted(p for p in affected if p not in PARTIDO_ORDER)
+        priority_affected = [p for p in weather_alert_service.PARTIDO_ORDER if p in affected]
+        rest_affected     = sorted(p for p in affected if p not in weather_alert_service.PARTIDO_ORDER)
         ordered_affected  = priority_affected + rest_affected
 
-        icon = self.alert_icon(phenomenon)
+        icon = weather_alert_service.alert_icon(phenomenon)
         partidos_txt = ", ".join(ordered_affected)
 
         lines = [
@@ -1321,7 +1227,10 @@ class BBSSystem:
         return ["\n".join(lines)]
 
     def check_short_term_alerts(self):
-        """Consulta el feed de avisos a muy corto plazo y emite al canal si hay match con el SW."""
+        """Consulta el feed de avisos a muy corto plazo, emite al canal lo
+        que todavía no se despachó, y guarda en cache TODO lo vigente que
+        matchea el SW (despachado o no) para que la pestaña Alertas de la
+        webapp lo pueda leer sin pegarle al feed de SMN en cada carga."""
         import sqlite3
 
         try:
@@ -1331,14 +1240,12 @@ class BBSSystem:
             return
 
         partidos = weather_alert_service.load_target_partidos()
+        current_for_cache = []
 
         with sqlite3.connect(short_term_alert_scraper.DB_PATH) as conn:
             short_term_alert_scraper.init_db(conn)
 
             for item in items:
-                if short_term_alert_scraper.is_dispatched(conn, item["dc_date"]):
-                    continue
-
                 alert_polygon = item.get("polygon", [])
                 if not alert_polygon:
                     continue
@@ -1354,6 +1261,11 @@ class BBSSystem:
                     continue
 
                 item["affected_partidos"] = sorted(matched_partidos)
+                current_for_cache.append(item)
+
+                if short_term_alert_scraper.is_dispatched(conn, item["dc_date"]):
+                    continue
+
                 messages = self.build_short_term_alert_messages(item)
 
                 try:
@@ -1366,6 +1278,11 @@ class BBSSystem:
                     logger.info("Short-term alert dispatched: %s → %s", item["dc_date"], matched_partidos)
                 except Exception as exc:
                     logger.exception("Error sending short-term alert: %s", exc)
+
+        try:
+            short_term_alert_scraper.save_current_items(current_for_cache)
+        except Exception:
+            logger.exception("Error saving short-term alerts cache")
 
 
 if __name__ == "__main__":

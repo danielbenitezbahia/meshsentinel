@@ -146,6 +146,25 @@ export interface TrafficStats {
   };
 }
 
+export interface RoleNodeEntry {
+  node_id: string;
+  short_name: string | null;
+  long_name: string | null;
+  role: string | null;
+}
+
+export interface RoleStatEntry {
+  count: number;
+  pct: number;
+  nodes: RoleNodeEntry[];
+}
+
+export interface RoleStats {
+  since_ts: number;
+  total_active_nodes: number;
+  by_role: Record<string, RoleStatEntry>;
+}
+
 export interface EvolutionPoint {
   label: string;
   public: number;
@@ -329,5 +348,104 @@ export interface GameRow {
   first_ts: number;
   last_ts: number;
   country?: string;
+}
+
+// ─── Alertas ────────────────────────────────────────────────────────────
+
+// Mismo formato que usa el resumen diario por LoRa (11 y 18hs): agrupado
+// por partido, con color de severidad e ícono por tipo de fenómeno.
+export interface SmnGroupedAlert {
+  title: string;
+  severity: string | null;
+  severity_color: string;
+  severity_label: string;
+  icon: string;
+  window_text: string;
+  onset: string | null;
+  expires: string | null;
+}
+
+export interface SmnPartidoGroup {
+  partido: string;
+  alerts: SmnGroupedAlert[];
+}
+
+export interface SmnCortoPlazoItem {
+  dc_date: string;
+  title: string;
+  phenomenon: string;
+  description_clean: string;
+  affected_partidos: string[];
+}
+
+export interface SmnCortoPlazoResponse {
+  updated_at: number | null;
+  items: SmnCortoPlazoItem[];
+}
+
+export interface EdesOutage {
+  outage_date: string;
+  locality: string;
+  time_start: string;
+  time_end: string;
+  streets: string;
+  raw_line: string;
+}
+
+export interface EdesScraperHealth {
+  last_run_ts: number | null;
+  last_run_ok: boolean | null;
+  last_day_blocks_found: number | null;
+  last_rows_found: number | null;
+  last_error: string | null;
+  looks_broken: boolean;
+}
+
+export interface FirmsEvent {
+  event_id: string;
+  latest_latitude: number;
+  latest_longitude: number;
+  partidos: string[];
+  satellites: string[];
+  pass_count: number;
+  max_frp: number;
+  current_level: number;
+  has_high_confidence: boolean;
+  status: string;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface ActiveAnnouncement {
+  text: string;
+  expires: string;
+}
+
+export interface PublicChannelMessage {
+  node_id: string;
+  short_name: string | null;
+  long_name: string | null;
+  text: string;
+  ts: number;
+  mins_ago: number | null;
+}
+
+export interface TropocastFrame {
+  offset_hour: number;
+  valid_at: string;
+  local_time: string | null;
+  score: number;
+  coverage_percent: number;
+}
+
+export interface TropocastLocation {
+  name: string;
+  lat: number;
+  lon: number;
+  radius_km: number;
+  model_run: string;
+  fetched_at: number;
+  data_status: string;
+  frames: TropocastFrame[];
 }
 

@@ -55,12 +55,32 @@ DAY_BLOCK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 LI_RE = re.compile(r"<li>(.*?)</li>", re.IGNORECASE | re.DOTALL)
-STRONG_RE = re.compile(r"<strong>(.*?)</strong>", re.IGNORECASE | re.DOTALL)
+# La localidad vino siempre envuelta en <strong>, hasta que EDES cambió a
+# <b> sin aviso (encontrado 2026-11-02: la página dejó de dar resultados
+# de un día para el otro). Se acepta cualquiera de las dos para no romper
+# de nuevo si vuelven a alternar.
+LOCALITY_RE = re.compile(r"<(strong|b|em)>(.*?)</\1>", re.IGNORECASE | re.DOTALL)
 TAG_RE = re.compile(r"<[^>]+>")
+# La frase despues del horario solía ser siempre "afecta al cuadrante
+# comprendido por las calles: X" -- ahora puede ser "afecta a la zona de
+# X", o no haber nada más que el horario. El horario es lo único que se
+# exige; el resto (si hay) se limpia en _extract_streets().
 SEGMENT_RE = re.compile(
-    r"de\s+(\d{1,2})\s+a\s+(\d{1,2})\s*hs,?\s*afecta al cuadrante comprendido por las calles:\s*(.+)$",
+    r"de\s+(\d{1,2})\s+a\s+(\d{1,2})\s*hs\.?,?\s*(.*)$",
     re.IGNORECASE,
 )
+AFECTA_PREFIX_RE = re.compile(
+    r"^afecta\s+(?:al\s+cuadrante\s+comprendido\s+por\s+las\s+calles|a\s+la\s+zona\s+de)\s*:?\s*",
+    re.IGNORECASE,
+)
+
+
+def _extract_streets(remainder: str) -> str:
+    """Saca el conector ("afecta al cuadrante comprendido por las calles:",
+    "afecta a la zona de") si está, para dejar solo la descripción. Si no
+    hay conector conocido (formato nuevo a veces no pone nada), devuelve
+    el texto tal cual -- puede quedar vacío, y es una fila válida igual."""
+    return AFECTA_PREFIX_RE.sub("", remainder.strip()).strip()
 
 
 def fetch_html() -> str:
@@ -113,12 +133,14 @@ def parse(raw_html: str, reference: Optional[date] = None) -> List[Dict]:
 
         for li_match in LI_RE.finditer(ul_content):
             li_content = li_match.group(1)
-            strong_match = STRONG_RE.search(li_content)
-            if not strong_match:
+            locality_match = LOCALITY_RE.search(li_content)
+            if not locality_match:
                 continue
-            locality = _clean(strong_match.group(1))
+            locality = _clean(locality_match.group(2))
+            if not locality:
+                continue
 
-            remainder = li_content[strong_match.end():]
+            remainder = li_content[locality_match.end():]
             for piece in re.split(r"<br\s*/?>", remainder, flags=re.IGNORECASE):
                 piece_text = _clean(piece)
                 if not piece_text:
@@ -131,7 +153,7 @@ def parse(raw_html: str, reference: Optional[date] = None) -> List[Dict]:
                     "locality": locality,
                     "time_start": f"{int(seg.group(1)):02d}:00",
                     "time_end": f"{int(seg.group(2)):02d}:00",
-                    "streets": seg.group(3).strip(),
+                    "streets": _extract_streets(seg.group(3)),
                     "raw_line": piece_text,
                 })
 
@@ -152,8 +174,69 @@ def init_db():
       raw_line TEXT NOT NULL
     )
     """)
+    # Registro de CADA corrida (haya encontrado cortes o no), para poder
+    # distinguir "no hay nada programado" de "el scraper dejó de
+    # funcionar" -- antes eran indistinguibles porque outages.scraped_at
+    # solo se graba si rows no está vacío (ver bug real: la página cambió
+    # de formato el 2026-10-30 y tardamos 3 días en notarlo porque no
+    # había ninguna señal de que el scraper hubiera dejado de encontrar
+    # cosas, nada se veía distinto desde afuera).
+    con.execute("""
+    CREATE TABLE IF NOT EXISTS scrape_log (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts               INTEGER NOT NULL,
+      ok               INTEGER NOT NULL,
+      day_blocks_found INTEGER NOT NULL,
+      rows_found       INTEGER NOT NULL,
+      error            TEXT
+    )
+    """)
     con.commit()
     con.close()
+
+
+def _log_scrape_attempt(ok: bool, day_blocks_found: int, rows_found: int, error: Optional[str]) -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT INTO scrape_log (ts, ok, day_blocks_found, rows_found, error) VALUES (?,?,?,?,?)",
+        (int(time.time()), int(ok), day_blocks_found, rows_found, error),
+    )
+    con.commit()
+    con.close()
+
+
+def get_scraper_health() -> Dict:
+    """Diagnóstico sin tener que mirar journalctl a mano. 'looks_broken'
+    se prende cuando, en las últimas corridas, la página siguió
+    publicando encabezados de día (DAY_BLOCK_RE matcheó) pero no se pudo
+    extraer ningún corte de adentro -- la señal fuerte de que cambió el
+    formato interno, a diferencia de un día real sin nada programado
+    (ahí la página ni pone el encabezado, day_blocks_found da 0)."""
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    last = con.execute("SELECT * FROM scrape_log ORDER BY ts DESC LIMIT 1").fetchone()
+    recent = con.execute(
+        "SELECT day_blocks_found, rows_found FROM scrape_log ORDER BY ts DESC LIMIT 5"
+    ).fetchall()
+    con.close()
+
+    if last is None:
+        return {
+            "last_run_ts": None, "last_run_ok": None, "last_day_blocks_found": None,
+            "last_rows_found": None, "last_error": None, "looks_broken": False,
+        }
+
+    looks_broken = len(recent) >= 3 and all(
+        r["day_blocks_found"] > 0 and r["rows_found"] == 0 for r in recent
+    )
+    return {
+        "last_run_ts": last["ts"],
+        "last_run_ok": bool(last["ok"]),
+        "last_day_blocks_found": last["day_blocks_found"],
+        "last_rows_found": last["rows_found"],
+        "last_error": last["error"],
+        "looks_broken": looks_broken,
+    }
 
 
 def store_scrape(rows: List[Dict], scraped_at: Optional[int] = None) -> int:
@@ -217,11 +300,35 @@ def get_latest_outages() -> List[Dict]:
 
 def run() -> int:
     """Descarga, parsea y guarda una corrida. Devuelve la cantidad de
-    cortes encontrados (0 es valido: puede no haber nada programado)."""
-    html_text = fetch_html()
-    rows = parse(html_text)
-    if not rows:
-        logger.warning("EDES scraper: no se encontraron cortes en la página (puede ser que no haya ninguno, o que la página cambió de formato).")
+    cortes encontrados (0 es valido: puede no haber nada programado).
+
+    Graba SIEMPRE un registro en scrape_log, haya o no cortes -- es lo que
+    permite a get_scraper_health() distinguir "no hay nada programado" de
+    "el scraper dejó de funcionar" sin tener que mirar logs a mano."""
+    try:
+        html_text = fetch_html()
+        day_blocks_found = len(DAY_BLOCK_RE.findall(html_text))
+        rows = parse(html_text)
+    except Exception as exc:
+        logger.exception("EDES scraper: fetch/parse falló")
+        _log_scrape_attempt(ok=False, day_blocks_found=0, rows_found=0, error=str(exc))
+        raise
+
+    if day_blocks_found > 0 and not rows:
+        logger.error(
+            "EDES scraper: la página tiene %d encabezado(s) de día pero no se "
+            "pudo extraer ningún corte de adentro -- probablemente cambió el "
+            "formato del <li> otra vez. Bajar la página a mano y comparar "
+            "contra LOCALITY_RE/SEGMENT_RE en edes_scraper.py.",
+            day_blocks_found,
+        )
+    elif not rows:
+        logger.info("EDES scraper: sin cortes programados (página sin encabezados de día).")
+
     store_scrape(rows)
-    logger.info("EDES scraper: %d corte(s) guardado(s).", len(rows))
+    _log_scrape_attempt(ok=True, day_blocks_found=day_blocks_found, rows_found=len(rows), error=None)
+    logger.info(
+        "EDES scraper: %d corte(s) guardado(s), %d encabezado(s) de día en la página.",
+        len(rows), day_blocks_found,
+    )
     return len(rows)

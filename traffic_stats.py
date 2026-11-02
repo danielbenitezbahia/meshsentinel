@@ -138,6 +138,7 @@ def init_db():
         ("partido", "TEXT"),
         ("status_message", "TEXT"),
         ("altitude_override", "REAL"),  # altura manual para el mapa 3D (pisa relieve/GPS)
+        ("role", "TEXT"),  # CLIENT, ROUTER, etc. -- NULL hasta el primer barrido del NodeDB
     ]:
         try:
             cur.execute(f"ALTER TABLE node_stats ADD COLUMN {col} {typedef}")
@@ -193,6 +194,20 @@ def init_db():
       updated_ts  INTEGER NOT NULL
     )
     """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS public_channel_messages (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      node_id    TEXT    NOT NULL,
+      short_name TEXT,
+      long_name  TEXT,
+      text       TEXT    NOT NULL,
+      ts         INTEGER NOT NULL
+    )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_public_channel_messages_ts ON public_channel_messages(ts DESC)"
+    )
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS node_track (
@@ -437,6 +452,27 @@ def update_node_hop_info(node_id: str, hops_from_bbs: Optional[int], snr_from_bb
     con.close()
 
 
+def update_node_role(node_id: str, role: str) -> None:
+    """Actualiza el rol Meshtastic del nodo (CLIENT, ROUTER, etc.).
+
+    No toca last_seen_ts: a diferencia de update_node_hop_info, esto se llama
+    sobre todo desde el barrido periódico del NodeDB que ya tiene el SDK
+    cacheado (ver _sweep_node_roles en interface.py), no necesariamente
+    porque se acaba de escuchar un paquete de este nodo.
+    """
+    ts = _now()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+    INSERT INTO node_stats (node_id, first_seen_ts, last_seen_ts, role)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(node_id) DO UPDATE SET
+        role = excluded.role
+    """, (node_id, ts, ts, role))
+    con.commit()
+    con.close()
+
+
 def record_device_metrics(
     node_id: str,
     channel_util: Optional[float],
@@ -641,6 +677,33 @@ def backfill_relay_node(node_id: str, relay_node: str, since_ts: int):
     con.close()
 
 
+def record_public_message(node_id: str, short_name: Optional[str], long_name: Optional[str], text: str) -> None:
+    """Guarda un mensaje de texto del canal público (MediumFast, channel_idx 0).
+    Tráfico sin cifrar, visible para cualquier nodo en rango -- no es un dato
+    nuevo en el sentido de privacidad, pero es la primera vez que el BBS
+    retiene el contenido (antes solo se contaba, ver channel_activity)."""
+    ts = _now()
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT INTO public_channel_messages (node_id, short_name, long_name, text, ts) VALUES (?, ?, ?, ?, ?)",
+        (node_id, short_name, long_name, text, ts)
+    )
+    con.commit()
+    con.close()
+
+
+def get_recent_public_messages(limit: int = 50) -> list:
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT node_id, short_name, long_name, text, ts FROM public_channel_messages "
+        "ORDER BY id DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
 def record_traceroute_path(target: str, path: list):
     import json
     ts = _now()
@@ -664,6 +727,7 @@ def cleanup_old_data(days: int = 7, track_days: int = 30):
     cur.execute("DELETE FROM node_stats_minute WHERE minute_ts < ?", (cutoff,))
     cur.execute("DELETE FROM device_metrics WHERE ts < ?", (cutoff,))
     cur.execute("DELETE FROM channel_activity WHERE ts < ?", (cutoff,))
+    cur.execute("DELETE FROM public_channel_messages WHERE ts < ?", (cutoff,))
     cur.execute("DELETE FROM node_track WHERE ts < ?", (track_cutoff,))
     cur.execute("DELETE FROM traceroute_paths WHERE ts < ?", (cutoff,))
     deleted = cur.rowcount

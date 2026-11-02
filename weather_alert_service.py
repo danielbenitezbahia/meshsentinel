@@ -491,6 +491,184 @@ def get_sudoeste_ba_alerts() -> List[Dict]:
     logger.info("SMN DEBUG: total alerts intersecting target partidos: %d", len(result))
     return result
 
+
+# ─── Agrupado/formato compartido (resumen diario del BBS y pestaña Alertas
+# de la webapp) ───────────────────────────────────────────────────────────
+#
+# Movido acá desde bbs_system.py (eran métodos de BBSSystem sin ningún uso
+# real de self) para que la webapp pueda mostrar las alertas agrupadas por
+# partido con el mismo color/ícono/orden que el resumen que se manda por
+# LoRa a las 11 y 18hs, sin reimplementar la lógica en TypeScript ni
+# depender de instanciar un BBSSystem completo (que abre el puerto serie).
+
+PARTIDO_ORDER = ["Bahia Blanca", "Monte Hermoso", "Coronel Dorrego", "Tornquist"]
+
+SEVERITY_COLOR = {
+    "Moderate": "🟡",
+    "Severe":   "🟠",
+    "Extreme":  "🔴",
+}
+
+# Nombre del color tal cual (sin "alerta"/"aviso" -- evita tener que elegir
+# género gramatical para acompañarlo, pedido explícito del usuario).
+SEVERITY_LABEL = {
+    "Moderate": "Amarillo",
+    "Severe":   "Naranja",
+    "Extreme":  "Rojo",
+}
+
+
+def severity_to_color(severity: Optional[str]) -> str:
+    return SEVERITY_COLOR.get((severity or "").strip(), "⚪")
+
+
+def severity_to_label(severity: Optional[str]) -> str:
+    return SEVERITY_LABEL.get((severity or "").strip(), "")
+
+
+_ALERT_ICON_KEYWORDS = [
+    ("torment", "⛈"),
+    ("viento", "💨"),
+    ("lluv", "🌧"),
+    ("nieve", "🌨"),
+    ("niebla", "🌫"),
+]
+
+
+def alert_icon(title: Optional[str]) -> str:
+    t = (title or "").lower()
+    for keyword, icon in _ALERT_ICON_KEYWORDS:
+        if keyword in t:
+            return icon
+    return "⚠"
+
+
+def day_abbr_es(dt: datetime) -> str:
+    days = {0: "lunes", 1: "martes", 2: "miércoles", 3: "jueves", 4: "viernes", 5: "sábado", 6: "domingo"}
+    return days[dt.weekday()]
+
+
+def moment_of_day_es(dt: datetime) -> str:
+    h = dt.hour
+    if 0 <= h < 6:
+        return "madrugada"
+    if 6 <= h < 12:
+        return "mañana"
+    if 12 <= h < 18:
+        return "tarde"
+    return "noche"
+
+
+def format_alert_window_es(onset_str: Optional[str], expires_str: Optional[str]) -> str:
+    try:
+        onset_dt = datetime.fromisoformat(onset_str)
+        expires_dt = datetime.fromisoformat(expires_str)
+    except Exception:
+        return "vigente"
+
+    day1, day2 = day_abbr_es(onset_dt), day_abbr_es(expires_dt)
+    part1, part2 = moment_of_day_es(onset_dt), moment_of_day_es(expires_dt)
+
+    if day1 == day2 and part1 == part2:
+        return f"{day1} {part1}"
+    if day1 == day2:
+        return f"{day1} {part1}/{part2}"
+    return f"{day1} {part1} → {day2} {part2}"
+
+
+def merge_partido_alerts(alerts: List[Dict]) -> List[Dict]:
+    """Elimina duplicados exactos y fusiona ventanas contiguas (gap <= 3h)
+    del mismo título+severidad, ordenado por severidad (Extreme primero)."""
+
+    def parse_dt(s):
+        try:
+            return datetime.fromisoformat(s) if s else None
+        except Exception:
+            return None
+
+    GAP_TOLERANCE = timedelta(hours=3)
+    SEV_ORDER = {"Extreme": 0, "Severe": 1, "Moderate": 2, "": 3}
+
+    groups: Dict = {}
+    for alert in alerts:
+        key = ((alert.get("title") or "").strip().upper(), (alert.get("severity") or "").strip())
+        groups.setdefault(key, []).append(alert)
+
+    merged = []
+    for group in groups.values():
+        seen_windows = set()
+        deduped = []
+        for a in group:
+            w = (a.get("onset") or "", a.get("expires") or "")
+            if w not in seen_windows:
+                seen_windows.add(w)
+                deduped.append(a)
+
+        sorted_group = sorted(deduped, key=lambda a: a.get("onset") or "")
+
+        current = dict(sorted_group[0])
+        for nxt in sorted_group[1:]:
+            current_expires = parse_dt(current.get("expires"))
+            nxt_onset = parse_dt(nxt.get("onset"))
+            nxt_expires = parse_dt(nxt.get("expires"))
+            if current_expires and nxt_onset and (nxt_onset - current_expires) <= GAP_TOLERANCE:
+                if nxt_expires and nxt_expires > current_expires:
+                    current["expires"] = nxt["expires"]
+            else:
+                merged.append(current)
+                current = dict(nxt)
+        merged.append(current)
+
+    merged.sort(key=lambda a: (SEV_ORDER.get(a.get("severity") or "", 3), a.get("onset") or ""))
+    return merged
+
+
+def ordered_partidos() -> List[str]:
+    all_partidos = list(TARGET_PARTIDOS.values())
+    rest = sorted(p for p in all_partidos if p not in PARTIDO_ORDER)
+    return PARTIDO_ORDER + rest
+
+
+def group_alerts_by_partido(alerts: List[Dict]) -> Dict[str, List[Dict]]:
+    by_partido: Dict[str, List[Dict]] = {}
+    for alert in alerts:
+        for partido in (alert.get("affected_partidos") or []):
+            by_partido.setdefault(partido, []).append(alert)
+    return by_partido
+
+
+def get_grouped_alerts() -> List[Dict]:
+    """Alertas SMN vigentes agrupadas por partido, en el mismo orden,
+    fusión y color/ícono que usa el resumen diario del BBS (ver
+    bbs_system.py: build_smn_messages_by_partido). Pensada para la pestaña
+    Alertas de la webapp -- devuelve datos estructurados, no texto LoRa."""
+    alerts = get_sudoeste_ba_alerts()
+    by_partido = group_alerts_by_partido(alerts)
+
+    result = []
+    for partido in ordered_partidos():
+        partido_alerts = merge_partido_alerts(by_partido.get(partido, []))
+        if not partido_alerts:
+            continue
+        result.append({
+            "partido": partido,
+            "alerts": [
+                {
+                    "title": a["title"],
+                    "severity": a.get("severity"),
+                    "severity_color": severity_to_color(a.get("severity")),
+                    "severity_label": severity_to_label(a.get("severity")),
+                    "icon": alert_icon(a["title"]),
+                    "window_text": format_alert_window_es(a.get("onset"), a.get("expires")),
+                    "onset": a.get("onset"),
+                    "expires": a.get("expires"),
+                }
+                for a in partido_alerts
+            ],
+        })
+    return result
+
+
 def normalize_text(value: str) -> str:
     if not value:
         return ""

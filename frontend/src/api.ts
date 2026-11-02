@@ -1,4 +1,4 @@
-import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow, GameRow, ChannelUtilResponse } from "./types";
+import type { NodesResponse, NeighborsResponse, TreeResponse, GraphResponse, TrackDatesResponse, TrackNodesResponse, TrackPointsResponse, TracePathResponse, TrafficStats, TrafficEvolutionResponse, StatsNodesResponse, NodeDistanceResponse, NodeEventsResponse, ActivityHeatmapResponse, ActivityAlertsResponse, LocalitiesResponse, EnergyDayResponse, VisitRow, GameRow, ChannelUtilResponse, RoleStats, SmnPartidoGroup, SmnCortoPlazoResponse, EdesOutage, EdesScraperHealth, FirmsEvent, ActiveAnnouncement, PublicChannelMessage, TropocastLocation } from "./types";
 
 export const API_BASE = "";
 
@@ -80,6 +80,12 @@ export async function fetchTrafficEvolution(period: string): Promise<TrafficEvol
   return res.json();
 }
 
+export async function fetchRoleStats(): Promise<RoleStats> {
+  const res = await fetch(`${API_BASE}/api/stats/roles`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function fetchNodeDistance(nodeId: string): Promise<NodeDistanceResponse> {
   const res = await fetch(`${API_BASE}/api/stats/distance/${encodeURIComponent(nodeId)}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -141,6 +147,48 @@ export async function fetchGames(period: "daily" | "monthly" | "yearly"): Promis
 export async function fetchChannelUtil(period: string, date?: string): Promise<ChannelUtilResponse> {
   const qs = date ? `period=${period}&date=${date}` : `period=${period}`;
   const res = await fetch(`${API_BASE}/api/stats/channel-util?${qs}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchSmnAlerts(): Promise<{ partidos: SmnPartidoGroup[] }> {
+  const res = await fetch(`${API_BASE}/api/alerts/smn`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchSmnCortoPlazo(): Promise<SmnCortoPlazoResponse> {
+  const res = await fetch(`${API_BASE}/api/alerts/smn-corto-plazo`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchEdesOutages(): Promise<{ outages: EdesOutage[]; scraped_at: number | null; health: EdesScraperHealth | null }> {
+  const res = await fetch(`${API_BASE}/api/alerts/edes`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchFirmsEvents(): Promise<{ events: FirmsEvent[] }> {
+  const res = await fetch(`${API_BASE}/api/alerts/firms`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchAnnouncement(): Promise<{ active: ActiveAnnouncement | null }> {
+  const res = await fetch(`${API_BASE}/api/alerts/announcement`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchPublicChannel(): Promise<{ messages: PublicChannelMessage[] }> {
+  const res = await fetch(`${API_BASE}/api/alerts/public-channel`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchTropocastForecast(): Promise<{ locations: TropocastLocation[] }> {
+  const res = await fetch(`${API_BASE}/api/alerts/tropocast`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

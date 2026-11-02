@@ -7,16 +7,15 @@ import {
   XAxis, YAxis, CartesianGrid,
   Tooltip, Legend,
 } from "recharts";
-import { fetchTrafficStats, fetchTrafficEvolution, fetchStatsNodes, fetchChannelUtil } from "../api";
+import { fetchTrafficStats, fetchTrafficEvolution, fetchStatsNodes, fetchChannelUtil, fetchRoleStats } from "../api";
 import { todayAR, addDays, formatDateLabel } from "../dateUtils";
-import type { TrafficStats, EvolutionPoint, StatsNodeEntry, ChannelUtilNodeSeries } from "../types";
+import type { TrafficStats, EvolutionPoint, StatsNodeEntry, ChannelUtilNodeSeries, RoleStats, RoleStatEntry } from "../types";
 
 type Period = "day" | "week" | "month";
 
 const PERIOD_LABELS: Record<Period, string> = { day: "Día", week: "Semana", month: "Mes" };
 
 const C_PUBLIC  = "#42a5f5";
-const C_KNOWN   = "#66bb6a";
 const C_ENC     = "#ef5350";
 
 const TYPE_COLOR: Record<string, string> = {
@@ -44,12 +43,44 @@ const NODE_COLORS = [
   "#ef5350", "#26c6da", "#ff7043", "#78909c",
 ];
 
+// Orden fijo (no por cantidad) para que la asignación de color sea siempre
+// la misma aunque cambien los números -- paleta validada contra CVD con
+// scripts/validate_palette.js del skill de dataviz (--mode dark --surface
+// #0d2137, que es el fondo real de .stats-chart-card).
+const ROLE_ORDER = ["CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_LATE", "REPEATER", "OTHER", "UNKNOWN"];
+
+const ROLE_LABEL: Record<string, string> = {
+  CLIENT:      "Client",
+  CLIENT_MUTE: "Client Mute",
+  ROUTER:      "Router",
+  ROUTER_LATE: "Router Late",
+  REPEATER:    "Repeater",
+  OTHER:       "Otros roles",
+  UNKNOWN:     "Sin dato",
+};
+
+const ROLE_COLOR: Record<string, string> = {
+  CLIENT:      "#3987e5",
+  CLIENT_MUTE: "#d95926",
+  ROUTER:      "#199e70",
+  ROUTER_LATE: "#c98500",
+  REPEATER:    "#d55181",
+  OTHER:       "#008300",
+  UNKNOWN:     "#546e7a",
+};
+
 const TOOLTIP_STYLE = {
   background: "#0d2137",
   border: "1px solid #1e3a5f",
   fontSize: 12,
   color: "#cfd8dc",
 };
+
+// Recharts pinta cada ítem del tooltip con el color de su propia barra/serie
+// en vez de heredar el color de TOOLTIP_STYLE -- con colores oscuros (ej. los
+// del gráfico de roles, pensados para el fondo de la card, no para texto)
+// el texto queda ilegible sobre el fondo igual de oscuro del tooltip.
+const TOOLTIP_ITEM_STYLE = { color: "#cfd8dc" };
 
 function ChannelUtilTooltip({ active, payload, label }: any) {
   if (!active || !payload || payload.length === 0) return null;
@@ -119,13 +150,44 @@ function MetricCard({ label, value, color }: { label: string; value: string | nu
   );
 }
 
+function RoleNodePanel({
+  roleKey, entry, onClose,
+}: { roleKey: string; entry: RoleStatEntry; onClose: () => void }) {
+  const showRole = roleKey === "OTHER"; // único bucket que mezcla roles distintos
+  return (
+    <div className="role-node-panel">
+      <div className="role-node-panel-header">
+        <span className="role-node-panel-title">
+          {ROLE_LABEL[roleKey] ?? roleKey} · {entry.count} {entry.count === 1 ? "nodo" : "nodos"}
+        </span>
+        <button className="role-node-panel-close" onClick={onClose} aria-label="Cerrar">×</button>
+      </div>
+      <div className="role-node-list">
+        {entry.nodes.length === 0 && <div className="rank-empty">Sin datos</div>}
+        {entry.nodes.map((n) => (
+          <div key={n.node_id} className="role-node-item">
+            <span className="role-node-item-name">
+              {n.short_name && <span className="role-node-item-short">{n.short_name}</span>}
+              {n.short_name && n.long_name ? " · " : ""}
+              {n.long_name ?? (!n.short_name ? n.node_id : "")}
+            </span>
+            {showRole && <span className="role-node-item-role">{n.role ?? "?"}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function StatsView() {
   const [period, setPeriod] = useState<Period>("day");
   const [stats, setStats]         = useState<TrafficStats | null>(null);
   const [evolution, setEvolution] = useState<EvolutionPoint[]>([]);
-  const [nodes, setNodes]         = useState<{ public: StatsNodeEntry[]; other_mesh: StatsNodeEntry[]; private_encrypted: StatsNodeEntry[] } | null>(null);
+  const [nodes, setNodes]         = useState<{ public: StatsNodeEntry[]; private_encrypted: StatsNodeEntry[] } | null>(null);
   const [chanUtil, setChanUtil]   = useState<{ labels: string[]; nodes: ChannelUtilNodeSeries[] } | null>(null);
   const [chanUtilDate, setChanUtilDate] = useState<string>(todayAR);
+  const [roleStats, setRoleStats] = useState<RoleStats | null>(null);
+  const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [loading, setLoading]     = useState(false);
 
   const load = useCallback(() => {
@@ -157,6 +219,13 @@ export default function StatsView() {
 
   useEffect(() => { loadChanUtil(); }, [loadChanUtil]);
 
+  // Snapshot de roles: no depende de period, es "ahora mismo", no una serie histórica.
+  const loadRoleStats = useCallback(() => {
+    fetchRoleStats().then(setRoleStats).catch(() => setRoleStats(null));
+  }, []);
+
+  useEffect(() => { loadRoleStats(); }, [loadRoleStats]);
+
   const today = todayAR();
   const goChanUtilDay = (delta: number) => {
     const next = addDays(chanUtilDate, delta);
@@ -166,7 +235,6 @@ export default function StatsView() {
   // Donut data
   const donutData = stats ? [
     { name: "Público",          value: stats.public.total,             color: C_PUBLIC },
-    { name: "Otras mesh",   value: stats.other_mesh.total,      color: C_KNOWN  },
     { name: "Encriptado",       value: stats.private_encrypted.total,  color: C_ENC    },
   ] : [];
 
@@ -180,7 +248,23 @@ export default function StatsView() {
       }))
     : [];
 
-  const byChannel = stats?.other_mesh.by_channel ?? [];
+  // Orden fijo (ROLE_ORDER), no por cantidad -- sólo se listan los roles que
+  // de verdad aparecen (by_role no trae claves en 0).
+  const roleBars = roleStats
+    ? ROLE_ORDER
+        .filter((k) => roleStats.by_role[k])
+        .map((k) => ({
+          key:   k,
+          name:  ROLE_LABEL[k],
+          count: roleStats.by_role[k].count,
+          pct:   roleStats.by_role[k].pct,
+          color: ROLE_COLOR[k],
+        }))
+    : [];
+
+  const selectedRoleEntry: RoleStatEntry | null =
+    selectedRole && roleStats ? roleStats.by_role[selectedRole] ?? null : null;
+
   const evolTitle = period === "day" ? "por hora (hoy)"
                   : period === "week" ? "últimos 7 días"
                   : "últimos 30 días";
@@ -214,7 +298,7 @@ export default function StatsView() {
             </button>
           ))}
         </div>
-        <button className="btn-refresh" onClick={() => { load(); loadChanUtil(); }} disabled={loading}>
+        <button className="btn-refresh" onClick={() => { load(); loadChanUtil(); loadRoleStats(); }} disabled={loading}>
           {loading ? "…" : "↺"}
         </button>
       </div>
@@ -223,7 +307,6 @@ export default function StatsView() {
       <div className="stats-cards">
         <MetricCard label="Total paquetes"  value={stats?.total ?? "—"} />
         <MetricCard label="Público"         value={stats ? `${stats.public.pct_of_total}%` : "—"}        color={C_PUBLIC} />
-        <MetricCard label="Otras mesh"  value={stats ? `${stats.other_mesh.pct_of_total}%` : "—"} color={C_KNOWN}  />
         <MetricCard label="Encriptado"      value={stats ? `${stats.private_encrypted.pct_of_total}%` : "—"} color={C_ENC} />
       </div>
 
@@ -244,6 +327,7 @@ export default function StatsView() {
               <Tooltip
                 formatter={(v) => (v as number).toLocaleString("es-AR")}
                 contentStyle={TOOLTIP_STYLE}
+                itemStyle={TOOLTIP_ITEM_STYLE}
               />
               <Legend wrapperStyle={{ fontSize: 12, color: "#b0bec5" }} />
             </PieChart>
@@ -260,6 +344,7 @@ export default function StatsView() {
               <Tooltip
                 formatter={(v, _, p: any) => [`${(v as number).toLocaleString("es-AR")} (${p.payload.pct}%)`, "Paquetes"]}
                 contentStyle={TOOLTIP_STYLE}
+                itemStyle={TOOLTIP_ITEM_STYLE}
               />
               <Bar dataKey="count" radius={[0, 4, 4, 0]}>
                 {publicBars.map((e, i) => <Cell key={i} fill={e.color} />)}
@@ -280,37 +365,55 @@ export default function StatsView() {
             <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={{ color: "#90a4ae" }} />
             <Legend wrapperStyle={{ fontSize: 12, color: "#b0bec5" }} />
             <Bar dataKey="public"            name="Público"        stackId="a" fill={C_PUBLIC} />
-            <Bar dataKey="other_mesh"        name="Otras mesh"    stackId="a" fill={C_KNOWN}  />
             <Bar dataKey="private_encrypted" name="Encriptado"     stackId="a" fill={C_ENC} radius={[3, 3, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Otras mesh por canal */}
+      {/* Roles de los nodos */}
+      {roleStats && roleBars.length > 0 && (
+        <div className="stats-chart-card stats-chart-half">
+          <div className="chart-title">
+            Roles de los nodos (activos 24h) · {roleStats.total_active_nodes}
+          </div>
+          <ResponsiveContainer width="100%" height={Math.max(140, roleBars.length * 40)}>
+            <BarChart layout="vertical" data={roleBars} margin={{ left: 4, right: 28, top: 4 }}>
+              <XAxis type="number" tick={{ fill: "#607d8b", fontSize: 11 }} />
+              <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#b0bec5", fontSize: 11 }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" horizontal={false} />
+              <Tooltip
+                formatter={(v, _, p: any) => [`${(v as number).toLocaleString("es-AR")} (${p.payload.pct}%)`, "Nodos"]}
+                contentStyle={TOOLTIP_STYLE}
+                itemStyle={TOOLTIP_ITEM_STYLE}
+              />
+              <Bar
+                dataKey="count"
+                radius={[0, 4, 4, 0]}
+                cursor="pointer"
+                onClick={(data: any) => setSelectedRole((prev) => (prev === data.key ? null : data.key))}
+              >
+                {roleBars.map((e, i) => <Cell key={i} fill={e.color} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          {selectedRoleEntry && selectedRole && (
+            <RoleNodePanel
+              roleKey={selectedRole}
+              entry={selectedRoleEntry}
+              onClose={() => setSelectedRole(null)}
+            />
+          )}
+        </div>
+      )}
+
       {/* Ranking de nodos */}
       {nodes && (
         <div className="stats-chart-card stats-chart-full">
           <div className="chart-title">Top nodos por categoría</div>
           <div className="rank-grid">
             <RankColumn title="Público"    data={nodes.public}            color={C_PUBLIC} />
-            <RankColumn title="Otras mesh" data={nodes.other_mesh}        color={C_KNOWN}  />
             <RankColumn title="Encriptado" data={nodes.private_encrypted} color={C_ENC}    />
           </div>
-        </div>
-      )}
-
-      {byChannel.length > 0 && (
-        <div className="stats-chart-card stats-chart-half">
-          <div className="chart-title">Otras mesh por canal</div>
-          <ResponsiveContainer width="100%" height={Math.max(140, byChannel.length * 40)}>
-            <BarChart layout="vertical" data={byChannel} margin={{ left: 4, right: 28, top: 4 }}>
-              <XAxis type="number" tick={{ fill: "#607d8b", fontSize: 11 }} />
-              <YAxis type="category" dataKey="name" width={110} tick={{ fill: "#b0bec5", fontSize: 11 }} />
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" horizontal={false} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} />
-              <Bar dataKey="count" name="Paquetes" fill={C_KNOWN} radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
         </div>
       )}
 

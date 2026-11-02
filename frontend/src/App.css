@@ -358,7 +358,7 @@ body, #root {
 /* ── Ranking nodos ── */
 .rank-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 24px;
   margin-top: 4px;
 }
@@ -430,6 +430,302 @@ body, #root {
   color: #546e7a;
   min-width: 32px;
   text-align: right;
+}
+
+.role-node-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #1e3a5f;
+}
+
+.role-node-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.role-node-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #b0bec5;
+}
+
+.role-node-panel-close {
+  background: none;
+  border: none;
+  color: #607d8b;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.role-node-panel-close:hover {
+  color: #cfd8dc;
+}
+
+.role-node-list {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.role-node-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 2px;
+  border-bottom: 1px solid #132a42;
+  font-size: 12px;
+}
+
+.role-node-item:last-child {
+  border-bottom: none;
+}
+
+.role-node-item-name {
+  flex: 1;
+  min-width: 0;
+  color: #cfd8dc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.role-node-item-short {
+  color: #90a4ae;
+  font-weight: 700;
+}
+
+.role-node-item-role {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #90a4ae;
+  background: #0a1929;
+  border: 1px solid #1e3a5f;
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+/* ── Pestaña Alertas ── */
+.cartelera-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #1a2e1a;
+  border: 1px solid #2e5c2e;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.cartelera-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.cartelera-text {
+  font-size: 13px;
+  color: #e3f2fd;
+  line-height: 1.4;
+}
+
+.cartelera-expires {
+  font-size: 11px;
+  color: #80b080;
+  margin-top: 4px;
+}
+
+.fire-map-wrap {
+  width: 100%;
+  height: 360px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.public-channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.public-channel-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #132a42;
+  font-size: 12px;
+}
+
+.public-channel-item:last-child {
+  border-bottom: none;
+}
+
+.public-channel-sender {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #64b5f6;
+}
+
+.public-channel-text {
+  flex: 1;
+  min-width: 0;
+  color: #cfd8dc;
+  overflow-wrap: break-word;
+}
+
+.public-channel-time {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #546e7a;
+  white-space: nowrap;
+}
+
+.tropocast-time-control {
+  margin-top: 12px;
+}
+
+.tropocast-time-label {
+  font-size: 20px;
+  font-weight: 700;
+  color: #64b5f6;
+  text-align: center;
+  letter-spacing: 0.3px;
+  margin-bottom: 10px;
+}
+
+.tropocast-time-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tropocast-time-slider {
+  flex: 1;
+  accent-color: #64b5f6;
+}
+
+.propagation-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 1000; /* por encima de los tiles y controles de Leaflet */
+  background: rgba(10, 25, 41, 0.88);
+  border: 1px solid #1e3a5f;
+  border-radius: 6px;
+  padding: 7px 10px;
+  pointer-events: none;
+}
+
+.propagation-legend-title {
+  font-size: 10px;
+  color: #90a4ae;
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+
+.propagation-legend-bar {
+  width: 130px;
+  height: 8px;
+  border-radius: 3px;
+  background: linear-gradient(to right, #ffeda0, #feb24c, #fd8d3c, #f03b20, #bd0026);
+}
+
+.propagation-legend-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #90a4ae;
+  margin-top: 3px;
+}
+
+.scraper-health-warning {
+  background: #2a1a0f;
+  border: 1px solid #f97316;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #fdba74;
+  line-height: 1.5;
+}
+
+.smn-partido-group {
+  margin-bottom: 14px;
+}
+
+.smn-partido-group:last-child {
+  margin-bottom: 0;
+}
+
+.smn-partido-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64b5f6;
+  margin-bottom: 6px;
+}
+
+.smn-alert-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #0a1929;
+  border: 1px solid #1e3a5f;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+}
+
+.smn-alert-row:last-child {
+  margin-bottom: 0;
+}
+
+.smn-alert-badge {
+  font-size: 16px;
+  flex-shrink: 0;
+  line-height: 1.3;
+}
+
+.smn-alert-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.smn-alert-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.smn-alert-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e3f2fd;
+}
+
+.smn-alert-severity-label {
+  font-size: 10px;
+  color: #90a4ae;
+  background: #0a1929;
+  border: 1px solid #1e3a5f;
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.smn-alert-window {
+  font-size: 11px;
+  color: #90a4ae;
 }
 
 /* ── Main ── */

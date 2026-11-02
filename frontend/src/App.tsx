@@ -9,6 +9,7 @@ import TrackView from "./components/TrackView";
 import StatsView from "./components/StatsView";
 import MeshWarsView from "./components/MeshWarsView";
 import ActivityView from "./components/ActivityView";
+import AlertasView from "./components/AlertasView";
 import { useFloatingTogglePosition } from "./useFloatingTogglePosition";
 import { isHiddenFromMap, computeSuspectNodeIds } from "./mapVisuals";
 import "./App.css";
@@ -175,6 +176,7 @@ export default function App() {
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/trayectorias">Trayectorias</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/estadisticas">Estadísticas</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/actividad">Actividad</NavLink>
+        <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/alertas">Alertas</NavLink>
         <NavLink className={({ isActive }) => `tab${isActive ? " tab-active" : ""}`} to="/meshwars">MeshWars</NavLink>
       </nav>
 
@@ -185,6 +187,7 @@ export default function App() {
         <Route path="/trayectorias" element={<TrackView />} />
         <Route path="/estadisticas" element={<StatsView />} />
         <Route path="/actividad" element={<ActivityView />} />
+        <Route path="/alertas" element={<AlertasView />} />
         <Route path="/meshwars" element={<MeshWarsView />} />
         <Route path="*" element={<Navigate to="/mesh" replace />} />
       </Routes>

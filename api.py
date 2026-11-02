@@ -21,6 +21,14 @@ import urllib.error
 from flask import Flask, jsonify, abort, request, send_from_directory
 from flask_cors import CORS
 
+import announcement
+import edes_scraper
+import firms_service
+import short_term_alert_scraper
+import traffic_stats
+import tropocast_service
+import weather_alert_service
+
 app = Flask(__name__)
 CORS(app)
 
@@ -273,7 +281,7 @@ def _freshness() -> dict:
     }
     if oldest_mins and oldest_mins > 30:
         result["warning"] = (
-            f"Algunos links tienen {oldest_mins} min — pueden estar desactualizados"
+            f"Algunos links tienen {oldest_mins} min, pueden estar desactualizados"
         )
     return result
 
@@ -881,6 +889,122 @@ def get_channel_util():
     if day_date is not None:
         result["date"] = str(day_date)
     return jsonify(result)
+
+
+# Roles con color/label propios en el frontend; el resto cae en "OTHER" para
+# no diluir el gráfico con roles de uso puntual (SENSOR, TAK, etc.)
+KNOWN_ROLES = {"CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_LATE", "REPEATER"}
+
+@app.get("/api/stats/roles")
+def get_role_stats():
+    since_24h = int(time.time()) - 86400
+
+    rows = _q("""
+        SELECT node_id, short_name, long_name, role
+        FROM node_stats
+        WHERE last_seen_ts >= ?
+    """, (since_24h,))
+
+    # by_role trae, además del conteo, el listado de nodos de cada bucket
+    # (nombre corto/largo y rol crudo) -- lo consume el click en una barra
+    # del gráfico de roles del frontend para mostrar el detalle sin pedir
+    # un segundo endpoint.
+    by_role: dict = {}
+    for row in rows:
+        role = row["role"]
+        key = "UNKNOWN" if role is None else (role if role in KNOWN_ROLES else "OTHER")
+        bucket = by_role.setdefault(key, {"count": 0, "nodes": []})
+        bucket["count"] += 1
+        bucket["nodes"].append({
+            "node_id":    row["node_id"],
+            "short_name": row["short_name"],
+            "long_name":  row["long_name"],
+            "role":       role,
+        })
+
+    total = sum(b["count"] for b in by_role.values())
+
+    def pct(n):
+        return round(n / total * 100, 1) if total else 0.0
+
+    for bucket in by_role.values():
+        bucket["pct"] = pct(bucket["count"])
+        bucket["nodes"].sort(key=lambda n: (n["long_name"] or n["short_name"] or n["node_id"] or "").lower())
+
+    return jsonify({
+        "since_ts":           since_24h,
+        "total_active_nodes": total,
+        "by_role": dict(sorted(by_role.items(), key=lambda x: -x[1]["count"])),
+    })
+
+
+# ─── Alertas (pestaña Alertas) ──────────────────────────────────────────────
+
+@app.get("/api/alerts/smn")
+def get_smn_alerts():
+    try:
+        # Mismo agrupado por partido, color y orden que usa el resumen
+        # diario que se manda por LoRa a las 11 y 18hs (ver
+        # weather_alert_service.get_grouped_alerts / bbs_system.py:
+        # build_smn_messages_by_partido).
+        partidos = weather_alert_service.get_grouped_alerts()
+    except Exception:
+        return jsonify({"partidos": [], "error": "no se pudo leer weather_alerts.sqlite"}), 200
+    return jsonify({"partidos": partidos})
+
+
+@app.get("/api/alerts/smn-corto-plazo")
+def get_smn_corto_plazo():
+    data = short_term_alert_scraper.get_current_items()
+    return jsonify(data)
+
+
+@app.get("/api/alerts/edes")
+def get_edes_outages():
+    try:
+        outages = edes_scraper.get_latest_outages()
+        scraped_at = edes_scraper.get_latest_scrape_ts()
+        health = edes_scraper.get_scraper_health()
+    except Exception:
+        return jsonify({"outages": [], "scraped_at": None, "error": "no se pudo leer edes_outages.sqlite"}), 200
+    return jsonify({"outages": outages, "scraped_at": scraped_at, "health": health})
+
+
+@app.get("/api/alerts/firms")
+def get_firms_events():
+    try:
+        events = firms_service.FirmsService().list_events()
+    except Exception:
+        return jsonify({"events": [], "error": "no se pudo leer firms.sqlite"}), 200
+    active = [e for e in events if e.get("status") == "ACTIVE"]
+    return jsonify({"events": active})
+
+
+@app.get("/api/alerts/announcement")
+def get_announcement():
+    active = announcement.get_active_announcement()
+    if not active:
+        return jsonify({"active": None})
+    return jsonify({"active": {"text": active["text"], "expires": active["expires"].isoformat()}})
+
+
+@app.get("/api/alerts/tropocast")
+def get_tropocast_forecast():
+    try:
+        locations = tropocast_service.TropocastService().all_latest_frames()
+    except Exception:
+        return jsonify({"locations": [], "error": "no se pudo leer tropocast.sqlite"}), 200
+    return jsonify({"locations": locations})
+
+
+@app.get("/api/alerts/public-channel")
+def get_public_channel_feed():
+    limit = min(int(request.args.get("limit", 50)), 200)
+    messages = traffic_stats.get_recent_public_messages(limit=limit)
+    now = int(time.time())
+    for m in messages:
+        m["mins_ago"] = round((now - m["ts"]) / 60) if m.get("ts") else None
+    return jsonify({"messages": messages})
 
 
 @app.get("/api/events/nodes")
