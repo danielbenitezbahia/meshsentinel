@@ -3,6 +3,8 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { MeshNode, MeshEdge } from "../types";
 import { hashNodeColor, isRecentEnoughForMap, isHiddenFromMap, computeSuspectNodeIds, snrToColor } from "../mapVisuals";
+import { useMapTheme } from "../useMapTheme";
+import MapThemeToggle from "./MapThemeToggle";
 
 interface Props {
   nodes: MeshNode[];
@@ -55,6 +57,7 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
   // se vuelve a apretar el toggle, que resetea todo.
   const [isolateMode, setIsolateMode] = useState(false);
   const [pinnedNodes, setPinnedNodes] = useState<Set<string>>(new Set());
+  const [theme] = useMapTheme();
 
   const toggleIsolateMode = useCallback(() => {
     setIsolateMode((prev) => !prev);
@@ -182,8 +185,12 @@ export default function MapView({ nodes, edges, selectedId, onSelectNode }: Prop
   const withoutPos = nodes.length - withPos;
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div
+      className={theme === "dark" ? "map-root-dark" : undefined}
+      style={{ width: "100%", height: "100%", position: "relative" }}
+    >
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      <MapThemeToggle />
       <div style={{ position: "absolute", top: 10, left: 60, zIndex: 1000 }}>
         <button
           className={`isolate-toggle-btn ${isolateMode ? "active" : ""}`}

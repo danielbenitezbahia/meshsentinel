@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { TropocastLocation } from "../types";
+import { useMapTheme } from "../useMapTheme";
+import MapThemeToggle from "./MapThemeToggle";
 
 interface Props {
   locations: TropocastLocation[];
@@ -50,6 +52,7 @@ export default function PropagationMap({ locations, offsetHour }: Props) {
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
   const fittedRef = useRef(false);
+  const [theme] = useMapTheme();
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -122,8 +125,12 @@ export default function PropagationMap({ locations, offsetHour }: Props) {
   }, [locations, offsetHour]);
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div
+      className={theme === "dark" ? "map-root-dark" : undefined}
+      style={{ width: "100%", height: "100%", position: "relative" }}
+    >
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      <MapThemeToggle />
       {locations.length === 0 && (
         <div style={{
           position: "absolute", top: "50%", left: "50%",

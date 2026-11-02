@@ -31,3 +31,37 @@ export function useFloatingTogglePosition(containerRef: RefObject<HTMLElement | 
 
   return pos;
 }
+
+/** Posición (fixed, respecto al viewport) pegada a la esquina superior
+ * IZQUIERDA del área del mapa -- usada por el toggle de tema día/noche en
+ * Mesh3DView, donde la esquina superior derecha ya está ocupada por el
+ * NavigationControl de MapLibre y por btn-view-toggle. Mismo motivo que
+ * btn-view-toggle para usar fixed+portal en vez de absolute (ver
+ * App.css: .btn-view-toggle). */
+export function useFloatingTopLeft(containerRef: RefObject<HTMLElement | null>) {
+  const [pos, setPos] = useState({ top: 10, left: 10 });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setPos({
+        top: Math.round(rect.top + 10),
+        left: Math.round(rect.left + 10),
+      });
+    };
+
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    window.addEventListener("resize", update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [containerRef]);
+
+  return pos;
+}

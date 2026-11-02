@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { TrackPoint } from "../types";
+import { useMapTheme } from "../useMapTheme";
+import MapThemeToggle from "./MapThemeToggle";
 
 export interface TrackData {
   nodeId: string;
@@ -19,6 +21,7 @@ export default function TrackMap({ tracks }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layersRef = useRef<Map<string, L.LayerGroup>>(new Map());
+  const [theme] = useMapTheme();
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -103,8 +106,12 @@ export default function TrackMap({ tracks }: Props) {
   }, [tracks]);
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div
+      className={theme === "dark" ? "map-root-dark" : undefined}
+      style={{ width: "100%", height: "100%", position: "relative" }}
+    >
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      <MapThemeToggle />
       {tracks.length === 0 && (
         <div style={{
           position: "absolute", top: "50%", left: "50%",

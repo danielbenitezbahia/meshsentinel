@@ -19,7 +19,9 @@ import { fetchGraph, setNodeAltitudeOverride } from "../api";
 import type { MeshNode, MeshEdge } from "../types";
 import { hashNodeColor, isRecentEnoughForMap, isHiddenFromMap, computeSuspectNodeIds, snrToColor } from "../mapVisuals";
 import { FloatingNodesLayer, type FloatingNode, type FloatingEdge } from "../mesh3dFloatingLayer";
-import { useFloatingTogglePosition } from "../useFloatingTogglePosition";
+import { useFloatingTogglePosition, useFloatingTopLeft } from "../useFloatingTogglePosition";
+import { useMapTheme } from "../useMapTheme";
+import MapThemeToggle from "./MapThemeToggle";
 
 setWorkerUrl(maplibreWorkerUrl);
 
@@ -260,6 +262,8 @@ export default function Mesh3DView({ onSwitchTo2D }: { onSwitchTo2D: () => void 
 
   const containerRef = useRef<HTMLDivElement>(null);
   const togglePos = useFloatingTogglePosition(containerRef);
+  const themeTogglePos = useFloatingTopLeft(containerRef);
+  const [theme] = useMapTheme();
   const mapRef = useRef<MapLibreMap | null>(null);
   const markersRef = useRef<Map<string, Marker>>(new Map());
   const terrainReadyRef = useRef(false);
@@ -633,7 +637,11 @@ export default function Mesh3DView({ onSwitchTo2D }: { onSwitchTo2D: () => void 
         </div>
         {error && <div className="error-bar">{error}</div>}
         <div className="graph-area">
-          <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+          <div
+            ref={containerRef}
+            className={theme === "dark" ? "map-root-dark" : undefined}
+            style={{ width: "100%", height: "100%" }}
+          />
         </div>
       </main>
       {createPortal(
@@ -646,6 +654,7 @@ export default function Mesh3DView({ onSwitchTo2D }: { onSwitchTo2D: () => void 
         </button>,
         document.body
       )}
+      <MapThemeToggle portal style={{ top: themeTogglePos.top, left: themeTogglePos.left }} />
 
       {editingNode && (
         <div className="mesh3d-editor-backdrop" onClick={closeEditor}>
